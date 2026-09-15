@@ -1,0 +1,29 @@
+[project]
+name = "81f7816a-f786-4f44-ada6-436f740f587f"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "OO77", email = "OO77@gmail.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+"ipywidgets>=8.0.0",
+    "jupyterlab>=4.6.3",
+    "matplotlib>=3.11.1",
+    "numpy>=1.26.0",
+    "pandas>=3.0.5",
+    "scikit-learn>=1.4.0",
+    "scipy>=1.12.0",
+    "seaborn>=0.13.2",
+    "statsmodels>=0.14.0",
+    "xgboost>=2.0.0",
+    "shap>=0.40.0",
+]
+
+[project.scripts]
+81f7816a-f786-4f44-ada6-436f740f587f = "81f7816a_f786_4f44_ada6_436f740f587f:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
