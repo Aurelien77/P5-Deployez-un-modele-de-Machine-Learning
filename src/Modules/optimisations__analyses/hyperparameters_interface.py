@@ -1550,6 +1550,8 @@ def interface_tuning(
 
     boutons_modeles = {}
 
+    accordions_categories = []
+
     sortie = widgets.Output()
 
     for categorie, modeles in (
@@ -1615,8 +1617,50 @@ def interface_tuning(
                 bouton
             )
 
+        # ----------------------------------------------------
+        # BOUTON "TOUT SELECTIONNER" PROPRE A LA CATEGORIE
+        # ----------------------------------------------------
+        # Evite d'avoir a cliquer sur chaque modele un par un
+        # quand on veut activer/desactiver une categorie entiere.
+
+        bouton_cat_tous = widgets.ToggleButton(
+
+            value=False,
+
+            description="☑️ Tout activer",
+
+            button_style="info",
+
+            layout=widgets.Layout(
+                width="260px"
+            )
+        )
+
+        def changement_categorie(
+            change,
+            boutons=boutons,
+            bouton_cat_tous=bouton_cat_tous
+        ):
+
+            if change["name"] != "value":
+                return
+
+            for bouton in boutons:
+                bouton.value = change["new"]
+
+            bouton_cat_tous.description = (
+                "☑️ Tout desactiver"
+                if change["new"]
+                else "☑️ Tout activer"
+            )
+
+        bouton_cat_tous.observe(
+            changement_categorie,
+            names="value"
+        )
+
         bloc_categorie = widgets.VBox(
-            boutons
+            [bouton_cat_tous] + boutons
         )
 
         accordion = widgets.Accordion(
@@ -1627,10 +1671,10 @@ def interface_tuning(
 
         accordion.set_title(
             0,
-            categorie
+            f"{categorie} ({len(modeles)})"
         )
 
-        display(
+        accordions_categories.append(
             accordion
         )
 
@@ -1724,6 +1768,13 @@ def interface_tuning(
         ),
 
         button_style="info",
+
+        disabled=True,
+
+        tooltip=(
+            "Disponible une fois qu'une "
+            "optimisation a été lancée"
+        ),
 
         layout=widgets.Layout(
             width="230px"
@@ -1902,7 +1953,10 @@ def interface_tuning(
     # CONTENEUR DES COLONNES
     # ========================================================
 
-    liste_checkboxes = widgets.VBox(
+    # Grille à 2 colonnes plutôt qu'une longue liste verticale
+    # à faire défiler : toutes les cases sont visibles d'un
+    # coup, sans scroll.
+    liste_checkboxes = widgets.GridBox(
 
         list(
             checkboxes_colonnes.values()
@@ -1910,11 +1964,9 @@ def interface_tuning(
 
         layout=widgets.Layout(
 
-            width="300px",
+            grid_template_columns="repeat(2, 260px)",
 
-            height="230px",
-
-            overflow_y="auto",
+            width="530px",
 
             border="1px solid #ccc",
 
@@ -2537,6 +2589,18 @@ def interface_tuning(
             ] = best_pipelines
 
             # ------------------------------------------------
+            # REVELATION DES BLOCS "RESULTATS"
+            # ------------------------------------------------
+            # Ces blocs n'ont de sens qu'une fois qu'on a des
+            # résultats : on les affiche seulement maintenant.
+
+            bloc_affichage.layout.display = ""
+
+            bloc_top.layout.display = ""
+
+            bouton_features.disabled = False
+
+            # ------------------------------------------------
             # AFFICHAGE
             # ------------------------------------------------
 
@@ -2972,11 +3036,13 @@ def interface_tuning(
     # ORGANISATION INTERFACE
     # ========================================================
 
-    bloc_hyperparametres = widgets.VBox([
+    bloc_hyperparametres_contenu = widgets.VBox([
 
         widgets.HTML(
-            "<h4>⚙️ Hyperparamètres "
-            "manuels</h4>"
+            "<i>Utilisés uniquement par le bouton "
+            "« ⚙️ Optimisation manuelle ». Ignorés par "
+            "« 🚀 Optimisation automatique » (qui teste "
+            "une grille de valeurs).</i>"
         ),
 
         widgets.HBox([
@@ -2995,19 +3061,45 @@ def interface_tuning(
         ])
     ])
 
-    bloc_commandes = widgets.VBox([
+    # Replié par défaut : ces réglages ne concernent que le
+    # mode manuel, ils n'ont pas besoin d'être visibles avant
+    # que l'utilisateur choisisse ce mode.
+    bloc_hyperparametres = widgets.Accordion(
+        children=[
+            bloc_hyperparametres_contenu
+        ],
+        selected_index=None
+    )
+
+    bloc_hyperparametres.set_title(
+        0,
+        "⚙️ Hyperparamètres manuels (optionnel)"
+    )
+
+    bloc_selection_modeles = widgets.VBox([
 
         widgets.HTML(
-            "<h4>🚀 Optimisation</h4>"
+            "<h4>1️⃣ Sélection des modèles</h4>"
         ),
 
         widgets.HBox([
             tout_selectionner_modeles
         ]),
 
+        widgets.VBox(
+            accordions_categories
+        )
+    ])
+
+    bloc_commandes = widgets.VBox([
+
+        widgets.HTML(
+            "<h4>2️⃣ Lancer l'optimisation</h4>"
+        ),
+
         widgets.HBox([
-            bouton_manuel,
-            bouton_auto
+            bouton_auto,
+            bouton_manuel
         ]),
 
         widgets.HBox([
@@ -3019,60 +3111,81 @@ def interface_tuning(
     # BLOC AFFICHAGE
     # ========================================================
 
-    bloc_affichage = widgets.VBox([
+    bloc_affichage = widgets.VBox(
+        [
+            widgets.HTML(
+                "<h4>📊 Affichage des "
+                "résultats</h4>"
+            ),
 
-        widgets.HTML(
-            "<h4>📊 Affichage des "
-            "résultats</h4>"
-        ),
+            widgets.HBox([
 
-        widgets.HBox([
+                tri_colonne,
 
-            tri_colonne,
+                tri_decroissant
+            ]),
 
-            tri_decroissant
-        ]),
+            widgets.HBox([
 
-        widgets.HBox([
+                bouton_tout_colonnes,
 
-            bouton_tout_colonnes,
+                bouton_aucune_colonne
+            ]),
 
-            bouton_aucune_colonne
-        ]),
+            widgets.HTML(
+                "<b>Colonnes à afficher :</b>"
+            ),
 
-        widgets.HTML(
-            "<b>Colonnes à afficher :</b>"
-        ),
+            liste_checkboxes
+        ],
 
-        liste_checkboxes
-    ])
+        # Masqué tant qu'aucune optimisation n'a été lancée :
+        # ces réglages n'ont d'effet qu'une fois des résultats
+        # disponibles.
+        layout=widgets.Layout(
+            display="none"
+        )
+    )
 
     # ========================================================
     # BLOC TOP N
     # ========================================================
 
-    bloc_top = widgets.VBox([
+    bloc_top = widgets.VBox(
+        [
+            widgets.HTML(
+                "<h4>💾 Sauvegarde des "
+                "meilleurs modèles</h4>"
+            ),
 
-        widgets.HTML(
-            "<h4>💾 Sauvegarde des "
-            "meilleurs modèles</h4>"
-        ),
+            widgets.HBox([
 
-        widgets.HBox([
+                metric_top,
 
-            metric_top,
+                top_n,
 
-            top_n,
+                bouton_top
+            ])
+        ],
 
-            bouton_top
-        ])
-    ])
+        # Masqué tant qu'aucun résultat n'existe (rien à
+        # sauvegarder avant d'avoir lancé une optimisation).
+        layout=widgets.Layout(
+            display="none"
+        )
+    )
 
     # ========================================================
     # INTERFACE FINALE
     # ========================================================
 
     interface = widgets.VBox([
+
+        bloc_selection_modeles,
+
+        widgets.HTML(
+            "<hr>"
+        ),
 
         bloc_hyperparametres,
 
@@ -3086,17 +3199,13 @@ def interface_tuning(
             "<hr>"
         ),
 
+        widgets.HTML(
+            "<h4>3️⃣ Résultats</h4>"
+        ),
+
         bloc_affichage,
 
-        widgets.HTML(
-            "<hr>"
-        ),
-
         bloc_top,
-
-        widgets.HTML(
-            "<hr>"
-        ),
 
         sortie
     ])
