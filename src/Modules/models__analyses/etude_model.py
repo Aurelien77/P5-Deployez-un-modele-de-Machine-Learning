@@ -918,7 +918,166 @@ def diagnostiquer_overfitting_tableau(
     )
     return df
 
+# ----------------------------------------------------------------------
+# 14. Courbe d'apprentissage (learning curve) - Suite et fin
+# ----------------------------------------------------------------------
+    # - Un grand écart persistant entre train et CV -> surapprentissage
+    #   (le modèle a besoin de plus de données ou d'une régularisation plus forte).
+    # - Les deux courbes convergent vers un bon score élevé -> modèle optimal.
+    # """
+    train_sizes_abs, train_scores, test_scores = learning_curve(
+        pipeline, X, y, cv=cv, scoring=scoring,
+        train_sizes=train_sizes, n_jobs=n_jobs, random_state=42
+    )
 
+    train_scores_mean = np.mean(train_scores, axis=1)
+    train_scores_std = np.std(train_scores, axis=1)
+    test_scores_mean = np.mean(test_scores, axis=1)
+    test_scores_std = np.std(test_scores, axis=1)
+
+    plt.figure(figsize=(8, 5))
+    plt.title(f"Courbe d'apprentissage{f' — {nom_modele}' if nom_modele else ''}")
+    plt.xlabel("Taille de l'échantillon d'entraînement")
+    plt.ylabel(f"Score ({scoring})")
+    plt.grid(True, linestyle=":", alpha=0.5)
+
+    plt.fill_between(train_sizes_abs, train_scores_mean - train_scores_std,
+                     train_scores_mean + train_scores_std, alpha=0.1, color="blue")
+    plt.fill_between(train_sizes_abs, test_scores_mean - test_scores_std,
+                     test_scores_mean + test_scores_std, alpha=0.1, color="orange")
+
+    plt.plot(train_sizes_abs, train_scores_mean, 'o-', color="blue", label="Score entraînement")
+    plt.plot(train_sizes_abs, test_scores_mean, 'o-', color="orange", label="Score validation croisée")
+
+    plt.legend(loc="best")
+    plt.tight_layout()
+    plt.show()
+
+    # Verdict automatique
+    dernier_train = train_scores_mean[-1]
+    dernier_cv = test_scores_mean[-1]
+    ecart = dernier_train - dernier_cv
+
+    print("\n--- Diagnostic automatique de la courbe d'apprentissage ---")
+    print(f"Score final Train : {dernier_train:.4f} | Score final CV : {dernier_cv:.4f} | Écart : {ecart:.4f}")
+
+    if dernier_train < seuil_score_faible and dernier_cv < seuil_score_faible:
+        print("➡️ Verdict : SOUS-APPRENTISSAGE (Les scores sont faibles sur les deux ensembles).")
+    elif ecart > seuil_overfitting:
+        print("➡️ Verdict : SURAPPRENTISSAGE (Écart important entre l'entraînement et la validation).")
+    else:
+        print("➡️ Verdict : MODÈLE BIEN ÉQUILIBRÉ (Scores élevés et écarts restreints).")
+
+
+# ----------------------------------------------------------------------
+# 15. Analyse du seuil optimal de décision
+# ----------------------------------------------------------------------
+def analyser_seuil_optimal(pipeline, X_test, y_test, nom_modele="Modèle"):
+    """
+    Trace l'évolution de la précision, du rappel et du F1-score en fonction
+    du seuil de décision pour identifier le seuil idéal.
+    """
+    y_proba = _get_probas(pipeline, X_test)
+    precisions, rappels, seuils = precision_recall_curve(y_test, y_proba)
+    
+    # Éviter la division par zéro
+    f1_scores = 2 * (precisions * rappels) / (precisions + rappels + 1e-10)
+    
+    # Le dernier élément de seuils est vide dans precision_recall_curve
+    seuils_complets = np.append(seuils, 1.0)
+    
+    best_idx = np.argmax(f1_scores)
+    best_seuil = seuils_complets[best_idx]
+    best_f1 = f1_scores[best_idx]
+
+    plt.figure(figsize=(8, 5))
+    plt.plot(seuils_complets, precisions, label="Précision", color="blue")
+    plt.plot(seuils_complets, rappels, label="Rappel", color="orange")
+    plt.plot(seuils_complets, f1_scores, label="F1-score", color="green", linestyle="--")
+    
+    plt.axvline(best_seuil, color='red', linestyle=':', label=f"Seuil optimal (F1={best_f1:.3f}) : {best_seuil:.2f}")
+    
+    plt.xlabel("Seuil de décision")
+    plt.ylabel("Score métrique")
+    plt.title(f"Évolution des métriques selon le seuil — {nom_modele}")
+    plt.legend(loc="lower left")
+    plt.grid(True, linestyle=":", alpha=0.5)
+    plt.tight_layout()
+    plt.show()
+
+    print(f"Seuil optimal recommandé pour {nom_modele} : {best_seuil:.2f} (F1-score max = {best_f1:.4f})")
+    return best_seuil
+
+
+# ----------------------------------------------------------------------
+# 16. Tableau récapitulatif du diagnostic d'Overfitting / Underfitting
+# ----------------------------------------------------------------------
+def diagnostiquer_overfitting_tableau(df_res, col_train='ROC_AUC_train', col_cv='ROC_AUC_cv', seuil_overfit=0.05):
+    """
+    Génère un tableau de diagnostic récapitulatif pour l'ensemble des modèles évalués.
+    """
+    df_diag = df_res.copy()
+    if col_train in df_diag.columns and col_cv in df_diag.columns:
+        df_diag['Ecart_Train_CV'] = df_diag[col_train] - df_diag[col_cv]
+        
+        def attribuer_statut(ecart):
+            if ecart > seuil_overfit:
+                return "Surapprentissage (Overfitting)"
+            elif ecart < -0.02:
+                return "Atypique (CV > Train)"
+            else:
+                return "Bien équilibré"
+                
+        df_diag['Diagnostic'] = df_diag['Ecart_Train_CV'].apply(attribuer_statut)
+        
+    display(df_diag.style.background_gradient(cmap="coolwarm", subset=[col_train, col_cv] if col_train in df_diag else None))
+    return df_diag
+
+
+# ----------------------------------------------------------------------
+# 17. Interface interactive globale (7 onglets)
+# ----------------------------------------------------------------------
+def interface_etude_modeles_etape(fitted_pipelines, X_train, y_train, X_test, y_test, df_res=None):
+    """
+    Interface interactive sous forme de widgets jupyter (7 onglets) permettant
+    d'explorer toutes les fonctions d'analyse post-entraînement.
+    """
+    model_names = list(fitted_pipelines.keys())
+    
+    # Widgets de sélection
+    select_modele = widgets.Dropdown(options=model_names, description='Modèle :', style={'description_width': 'initial'})
+    select_dataset = widgets.Dropdown(options=[('Test', 'test'), ('Train', 'train')], value='test', description='Jeu de données :', style={'description_width': 'initial'})
+    slider_seuil = widgets.FloatSlider(value=0.5, min=0.1, max=0.9, step=0.05, description='Seuil :', style={'description_width': 'initial'})
+
+    out_tab1 = widgets.Output()
+    out_tab2 = widgets.Output()
+    out_tab3 = widgets.Output()
+    out_tab4 = widgets.Output()
+    out_tab5 = widgets.Output()
+    out_tab6 = widgets.Output()
+    out_tab7 = widgets.Output()
+
+    def get_data(dataset_choisi):
+        return (X_train, y_train) if dataset_choisi == 'train' else (X_test, y_test)
+
+    # Onglet 1 : Résidus / Erreurs
+    with out_tab1:
+        print("Sélectionnez les paramètres et relancez ou explorez ci-dessous.")
+
+    # Création du conteneur à onglets
+    tab = widgets.Tab(children=[out_tab1, out_tab2, out_tab3, out_tab4, out_tab5, out_tab6, out_tab7])
+    tab.set_title(0, 'Résidus & Erreurs')
+    tab.set_title(1, 'Proba par Type')
+    tab.set_title(2, 'Train vs Test')
+    tab.set_title(3, 'Importance (Permutation)')
+    tab.set_title(4, 'Courbes ROC / PR')
+    tab.set_title(5, 'Calibration & Seuil')
+    tab.set_title(6, 'Diagnostic Global')
+
+    display(widgets.VBox([
+        widgets.HBox([select_modele, select_dataset, slider_seuil]),
+        tab
+    ]))
 # ----------------------------------------------------------------------
 # Widget UI pour l'étape d'analyse approfondie des modèles (7 Onglets)
 # ----------------------------------------------------------------------
@@ -1037,6 +1196,14 @@ def interface_etude_modeles_etape():
             )
             plot_importance_heatmap(importances_pivot, top_n=10)
             plot_importance_grille(importances_pivot, top_n=10, ncols=2)
+            
+        
+            print(f"\n--- 5. Permutation Importances détaillée avec écart-type (Top modèle) ---")
+            meilleur_modele = top_model_names[0]
+            importance_permutation_avec_erreur(
+                current_fitted_pipelines[meilleur_modele], X_eval, y_eval, 
+                nom_modele=f"{meilleur_modele} ({dataset_label})", scoring='roc_auc'
+            )
 
         # --- Onglet 3 : Matrices de confusion ---
         with tab.children[3]:
@@ -1089,3 +1256,8 @@ def interface_etude_modeles_etape():
         btn_eval,
         tab
     ])
+
+
+
+
+

@@ -3,16 +3,16 @@ Module regroupant les fonctions de modélisation pour la prédiction de
 l'attrition (a_quitte_l_entreprise).
 
 MISES A JOUR :
-- Ajout de la métrique PR_AUC_test (Precision-Recall AUC), plus robuste
-  que le ROC-AUC sur données déséquilibrées.
-- Ajout d'un sélecteur interactif d'objectif métier qui ne colore que
-  la colonne pertinente selon ce que l'on cherche à optimiser
-  (Recall / Precision / F1 / ROC-AUC / PR-AUC), au lieu de colorer
-  plusieurs colonnes en même temps.
+- Intégration du panneau interactif de sélection par catégorie de modèles (ON/OFF).
+- Ajout de la métrique PR_AUC_test (Precision-Recall AUC).
+- Sélecteur interactif d'objectif métier.
+- Paramétrage dynamique du nombre de folds, des répétitions et du seuil.
 """
 
 import time
+import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 from IPython.display import display, HTML, clear_output
 import ipywidgets as widgets
 
@@ -20,10 +20,13 @@ from sklearn.base import clone
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from sklearn.model_selection import cross_val_score, train_test_split, StratifiedKFold, RepeatedStratifiedKFold, KFold
+from sklearn.model_selection import (
+    cross_val_score, train_test_split, StratifiedKFold, 
+    RepeatedStratifiedKFold, KFold, cross_validate
+)
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
-    roc_auc_score, average_precision_score,
+    roc_auc_score, average_precision_score, classification_report
 )
 from sklearn.linear_model import LogisticRegression, RidgeClassifier
 from sklearn.svm import SVC, LinearSVC
@@ -135,16 +138,17 @@ def obtenir_modeles(random_state=42):
 
 
 # ----------------------------------------------------------------------
-# 4. Boucle d'évaluation (Train, CV, Test) — avec PR_AUC_test en plus
+# 4. Boucle d'évaluation avec scores par Fold, Moyenne, Écart-type & Anti-Fuite
 # ----------------------------------------------------------------------
-# ----------------------------------------------------------------------
-# 4. Boucle d'évaluation (Train, CV, Test) — avec PR_AUC_test en plus
-# ----------------------------------------------------------------------
-def evaluer_modeles(X_train, y_train, X_test, y_test, preprocessor, models=None, cv=None, verbose=True):
+def evaluer_modeles(X_train, y_train, X_test, y_test, preprocessor, models=None, cv=None, n_splits=5, n_repeats=None, verbose=True):
     if models is None:
         models = obtenir_modeles()
+     
     if cv is None:
-        cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+        if n_repeats and n_repeats > 1:
+            cv = RepeatedStratifiedKFold(n_splits=n_splits, n_repeats=n_repeats, random_state=42)
+        else:
+            cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
 
     results = []
     fitted_pipelines = {}
@@ -160,44 +164,53 @@ def evaluer_modeles(X_train, y_train, X_test, y_test, preprocessor, models=None,
 
         start_time = time.time()
 
-        # 1. Validation croisée sur le train
-        cv_scores = cross_val_score(pipeline, X_train, y_train, cv=cv, scoring='roc_auc')
+        cv_results = cross_validate(
+            pipeline, 
+            X_train, 
+            y_train, 
+            cv=cv, 
+            scoring=['roc_auc', 'f1', 'precision', 'recall', 'accuracy', 'average_precision'],
+            return_train_score=True,
+            n_jobs=-1
+        )
 
-        # 2. Entraînement complet sur tout le X_train
         pipeline.fit(X_train, y_train)
         fitted_pipelines[name] = pipeline
         duration = time.time() - start_time
 
-        # --- Calcul des probas et prédictions sur TRAIN ---
         if hasattr(pipeline, "predict_proba"):
             y_train_proba = pipeline.predict_proba(X_train)[:, 1]
         elif hasattr(pipeline.named_steps['classifier'], "decision_function"):
             decisions_train = pipeline.decision_function(X_train)
-            import numpy as np
             y_train_proba = 1 / (1 + np.exp(-decisions_train))
         else:
             y_train_proba = [0] * len(y_train)
 
         y_train_pred = pipeline.predict(X_train)
 
-        # --- Calcul des probas et prédictions sur TEST ---
         if hasattr(pipeline, "predict_proba"):
             y_test_proba = pipeline.predict_proba(X_test)[:, 1]
         elif hasattr(pipeline.named_steps['classifier'], "decision_function"):
             decisions_test = pipeline.decision_function(X_test)
-            import numpy as np
             y_test_proba = 1 / (1 + np.exp(-decisions_test))
         else:
             y_test_proba = [0] * len(y_test)
 
         y_test_pred = pipeline.predict(X_test)
 
-        # --- Stockage des résultats Train & Test ---
         results.append({
             "Model": name,
-            "ROC_AUC_cv": cv_scores.mean(),
+            "ROC_AUC_cv": cv_results['test_roc_auc'].mean(),
+            "ROC_AUC_cv_std": cv_results['test_roc_auc'].std(),
+            "ROC_AUC_folds": cv_results['test_roc_auc'].tolist(),
+            
+            "F1_cv": cv_results['test_f1'].mean(),
+            "F1_cv_std": cv_results['test_f1'].std(),
+            
             "ROC_AUC_train": roc_auc_score(y_train, y_train_proba) if len(set(y_train)) > 1 else 0.5,
-            "Recall_train": recall_score(y_train, y_train_pred, zero_division=0),
+            "ROC_AUC_train_cv_mean": cv_results['train_roc_auc'].mean(),
+            "ROC_AUC_train_cv_std": cv_results['train_roc_auc'].std(),
+            
             "ROC_AUC_test": roc_auc_score(y_test, y_test_proba) if len(set(y_test)) > 1 else 0.5,
             "PR_AUC_test": average_precision_score(y_test, y_test_proba) if len(set(y_test)) > 1 else 0.0,
             "Accuracy_test": accuracy_score(y_test, y_test_pred),
@@ -209,15 +222,16 @@ def evaluer_modeles(X_train, y_train, X_test, y_test, preprocessor, models=None,
 
     df_res = pd.DataFrame(results).set_index("Model")
     
-    # --- NOUVEAU : Ajout des écarts et du diagnostic ---
     seuil_overfitting = 0.05
     seuil_score_faible = 0.65
 
-    df_res['Ecart_Train_CV'] = df_res['ROC_AUC_train'] - df_res['ROC_AUC_cv']
+    df_res['Ecart_Train_CV'] = df_res['ROC_AUC_train_cv_mean'] - df_res['ROC_AUC_cv']
     df_res['Ecart_CV_Test'] = df_res['ROC_AUC_cv'] - df_res['ROC_AUC_test']
 
     def _diagnostic(row):
-        if row['ROC_AUC_train'] < seuil_score_faible and row['ROC_AUC_cv'] < seuil_score_faible:
+        if row.get('ROC_AUC_cv_std', 0) > 0.1:
+            return "⚠️ Instable (Fort écart-type folds)"
+        elif row['ROC_AUC_train_cv_mean'] < seuil_score_faible and row['ROC_AUC_cv'] < seuil_score_faible:
             return "🟠 Sous-apprentissage"
         elif row['Ecart_Train_CV'] > seuil_overfitting:
             return "🔴 Surapprentissage"
@@ -227,12 +241,13 @@ def evaluer_modeles(X_train, y_train, X_test, y_test, preprocessor, models=None,
             return "🟢 Bien équilibré"
 
     df_res['Diagnostic'] = df_res.apply(_diagnostic, axis=1)
-    # ---------------------------------------------------
-
     df_res = df_res.sort_values("ROC_AUC_cv", ascending=False)
+    
     return df_res, fitted_pipelines
+
+
 # ----------------------------------------------------------------------
-# 5. Affichage HTML stylé (statique, toutes colonnes clés colorées)
+# 5. Affichage HTML stylé
 # ----------------------------------------------------------------------
 def afficher_resultats(df_res, titre="📊 Comparatif des performances des modèles (Train vs CV vs Test)"):
     display(HTML(f"<h3>{titre}</h3>"))
@@ -247,61 +262,37 @@ def afficher_resultats(df_res, titre="📊 Comparatif des performances des modè
 # 5bis. Objectifs métier disponibles pour le sélecteur interactif
 # ----------------------------------------------------------------------
 def get_objectifs_disponibles():
-    """
-    Chaque objectif pointe vers UNE colonne à mettre en avant (colorée en vert),
-    toutes les autres colonnes restent neutres.
-    """
     return {
         "recall_test": {
             "label": "🎯 Détecter un maximum de départs (Recall)",
-            "description": (
-                "Priorise le Recall_test : on veut rater le moins de départs possible, "
-                "quitte à générer plus de fausses alertes (utile si une action de rétention "
-                "coûte peu comparé au coût d'un départ non anticipé)."
-            ),
+            "description": "Priorise le Recall_test : on veut rater le moins de départs possible.",
             "colonne": "Recall_test",
         },
         "precision_test": {
             "label": "🎯 Limiter les fausses alertes (Precision)",
-            "description": (
-                "Priorise la Precision_test : on ne veut déclencher une action (offre, "
-                "entretien RH...) que sur des cas vraiment à risque, quitte à rater "
-                "certains départs (utile si l'action de rétention est coûteuse)."
-            ),
+            "description": "Priorise la Precision_test : on ne déclenche une action que sur des cas vraiment à risque.",
             "colonne": "Precision_test",
         },
         "f1_test": {
             "label": "⚖️ Compromis équilibré (F1-score)",
-            "description": (
-                "Priorise le F1_test : bon compromis par défaut entre Precision et "
-                "Recall, à utiliser si aucun des deux coûts (rater un départ / fausse "
-                "alerte) ne domine clairement l'autre."
-            ),
+            "description": "Priorise le F1_test : bon compromis par défaut entre Precision et Recall.",
             "colonne": "F1_test",
         },
         "roc_auc_test": {
             "label": "📈 Pouvoir discriminant global (ROC-AUC)",
-            "description": (
-                "Priorise le ROC_AUC_test : mesure la capacité globale du modèle à "
-                "classer un partant au-dessus d'un non-partant, sur toutes les classes. "
-                "Moins informatif si la classe qui part est très minoritaire."
-            ),
+            "description": "Priorise le ROC_AUC_test : capacité globale du modèle à classer les profils.",
             "colonne": "ROC_AUC_test",
         },
         "pr_auc_test": {
             "label": "📊 Discrimination sur la classe minoritaire (PR-AUC)",
-            "description": (
-                "Priorise le PR_AUC_test : recommandé pour l'attrition, car il se "
-                "concentre sur la capacité du modèle à bien classer la classe "
-                "minoritaire (les départs), même après stratification du split."
-            ),
+            "description": "Priorise le PR_AUC_test : recommandé pour l'attrition (classe minoritaire).",
             "colonne": "PR_AUC_test",
         },
     }
 
 
 # ----------------------------------------------------------------------
-# 5ter. Stylisation dynamique : ne colore que la colonne de l'objectif choisi
+# 5ter. Stylisation dynamique
 # ----------------------------------------------------------------------
 def styliser_resultats(df_res, objectif_key="f1_test"):
     objectifs = get_objectifs_disponibles()
@@ -316,20 +307,16 @@ def styliser_resultats(df_res, objectif_key="f1_test"):
         .background_gradient(subset=[colonne_cible], cmap="Greens")
     )
     
-    # --- NOUVEAU : Coloration de la colonne d'écart si elle existe ---
     if 'Ecart_Train_CV' in df_trie.columns:
         styled = styled.background_gradient(subset=['Ecart_Train_CV'], cmap='RdYlGn_r')
         
     return styled, objectif, df_trie
 
+
 # ----------------------------------------------------------------------
 # 5quater. Widget interactif de sélection d'objectif métier
 # ----------------------------------------------------------------------
 def interface_choix_objectif(df_res):
-    """
-    Affiche un sélecteur d'objectif métier (Recall / Precision / F1 / ROC-AUC / PR-AUC).
-    Le tableau est re-coloré (une seule colonne verte) et re-trié selon le choix.
-    """
     objectifs = get_objectifs_disponibles()
 
     dropdown_objectif = widgets.Dropdown(
@@ -358,13 +345,13 @@ def interface_choix_objectif(df_res):
             display(styled)
 
     dropdown_objectif.observe(rafraichir, names="value")
-    rafraichir()  # affichage initial
+    rafraichir()
 
     return widgets.VBox([dropdown_objectif, out])
 
 
 # ----------------------------------------------------------------------
-# 6. Widget UI pour l'étape du préprocesseur (inchangé)
+# 6. Widget UI pour l'étape du préprocesseur
 # ----------------------------------------------------------------------
 def bouton_preprocesseur_etape(get_X_train_test_callback):
     btn_prep = widgets.Button(
@@ -399,11 +386,6 @@ def bouton_preprocesseur_etape(get_X_train_test_callback):
                 cols_qualitatives=selection_par_groupe.get("qualitatives", []),
                 cols_booleennes=selection_par_groupe.get("booleennes", []),
                 cols_ratios=selection_par_groupe.get("nouvelles_features", []),
-                inclure_lineaires=True,
-                inclure_non_lineaires=True,
-                inclure_qualitatives=True,
-                inclure_booleennes=True,
-                inclure_ratios=True,
             )
 
             prep.fit(X_train)
@@ -422,15 +404,229 @@ def bouton_preprocesseur_etape(get_X_train_test_callback):
                 <div style="background-color: #d4edda; color: #155724; padding: 12px; border-radius: 6px; border: 1px solid #c3e6cb; margin-top: 10px; font-weight: bold; font-size: 14px;">
                     ✅ Étape 2 OK → Vous pouvez maintenant passer à la cellule de modélisation !
                 </div>
-            """))
+            """ ""))
 
     btn_prep.on_click(on_prep)
     return widgets.VBox([btn_prep, out_prep])
 
 
 # ----------------------------------------------------------------------
-# 7. Widget UI pour l'étape de modélisation — appelle désormais
-#    l'interface interactive de choix d'objectif après le calcul
+# Fonctions d'analyse des erreurs et visualisations
+# ----------------------------------------------------------------------
+def afficher_analyse_erreurs_detaillees(pipeline, X_eval, y_eval, seuil=0.5):
+    if hasattr(pipeline, "predict_proba"):
+        probas = pipeline.predict_proba(X_eval)[:, 1]
+    else:
+        decisions = pipeline.decision_function(X_eval)
+        probas = 1 / (1 + np.exp(-decisions))
+        
+    y_pred = (probas >= seuil).astype(int)
+    
+    df_diag = X_eval.copy()
+    df_diag['Vraie_Classe'] = y_eval.values
+    df_diag['Proba_Predite'] = probas
+    df_diag['Classe_Predite'] = y_pred
+    
+    df_erreurs = df_diag[df_diag['Vraie_Classe'] != df_diag['Classe_Predite']].copy()
+    
+    def getTypeErreur(row):
+        if row['Vraie_Classe'] == 0 and row['Classe_Predite'] == 1:
+            return "Faux Positif (Fausse alerte)"
+        else:
+            return "Faux Négatif (Départ raté)"
+            
+    if not df_erreurs.empty:
+        df_erreurs['Type_Erreur'] = df_erreurs.apply(getTypeErreur, axis=1)
+        
+    return df_erreurs
+
+
+def tracer_sigmoide_et_erreurs(pipeline, X_eval, y_eval, seuil=0.5):
+    plt.figure(figsize=(10, 5))
+    
+    if hasattr(pipeline, "named_steps") and hasattr(pipeline.named_steps.get('classifier', None), "decision_function"):
+        scores = pipeline.decision_function(X_eval)
+        probas = 1 / (1 + np.exp(-scores))
+    elif hasattr(pipeline, "decision_function"):
+        scores = pipeline.decision_function(X_eval)
+        probas = 1 / (1 + np.exp(-scores))
+    else:
+        probas = pipeline.predict_proba(X_eval)[:, 1]
+        
+    y_pred = (probas >= seuil).astype(int)
+    corrects = (y_pred == y_eval)
+    
+    plt.scatter(range(len(probas))[corrects], probas[corrects], color='green', alpha=0.6, label='Bonne prédiction')
+    plt.scatter(range(len(probas))[~corrects], probas[~corrects], color='red', alpha=0.8, label='Erreur')
+    plt.axhline(y=seuil, color='orange', linestyle='--', linewidth=2, label=f'Seuil ({seuil})')
+    
+    plt.title("Courbe de décision, seuil et répartition des erreurs")
+    plt.xlabel("Index des individus dans le jeu de données")
+    plt.ylabel("Probabilité prédite")
+    plt.legend()
+    plt.grid(True, linestyle=':', alpha=0.6)
+    plt.show()
+
+
+# ----------------------------------------------------------------------
+# 6bis. Interface globale d'étude des modèles
+# ----------------------------------------------------------------------
+def interface_etude_modeles_etape():
+    import sys
+    main_ns = sys.modules['__main__'].__dict__
+    
+    all_models = list(main_ns.get("fitted_pipelines_widget", {}).keys())
+    if not all_models:
+        all_models = ["Dummy_Stratified", "LogisticRegression_L2", "RandomForest", "XGBoost"]
+
+    select_models = widgets.SelectMultiple(
+        options=all_models,
+        value=all_models[:min(2, len(all_models))], 
+        description='Modèles ciblés :',
+        style={'description_width': 'initial'},
+        layout=widgets.Layout(width='320px', height='80px')
+    )
+
+    metrique_dropdown = widgets.Dropdown(
+        options=['Recall', 'F1', 'ROC_AUC', 'Precision', 'Accuracy', 'PR_AUC'],
+        value='Recall',
+        description='Métrique Top N :',
+        style={'description_width': 'initial'},
+        layout=widgets.Layout(width='220px')
+    )
+
+    top_n_models_slider = widgets.IntSlider(
+        value=min(1, len(all_models)),
+        min=1,
+        max=max(1, len(all_models)),
+        step=1,
+        description='Top N :',
+        style={'description_width': 'initial'},
+        layout=widgets.Layout(width='200px')
+    )
+    
+    seuil_slider = widgets.FloatSlider(
+        value=main_ns.get("seuil_personnalise", 0.5),
+        min=0.05, max=0.95, step=0.05,
+        description='Seuil de décision :',
+        style={'description_width': 'initial'},
+        layout=widgets.Layout(width='260px'),
+        readout_format='.2f'
+    )
+
+    dataset_dropdown = widgets.Dropdown(
+        options=[('Jeu de Test', 'test'), ('Jeu d\'Entraînement (Train)', 'train')],
+        value='test',
+        description='Données :',
+        style={'description_width': 'initial'},
+        layout=widgets.Layout(width='220px')
+    )
+
+    btn_eval = widgets.Button(
+        description="🚀 Charger / Actualiser les analyses",
+        button_style='primary',
+        layout=widgets.Layout(width='320px', height='40px')
+    )
+
+    tab_contents = [widgets.Output() for _ in range(7)]
+    tab = widgets.Tab()
+    tab.children = tab_contents
+    tab.set_title(0, "1. Probas & Erreurs")
+    tab.set_title(1, "2. Résidus & CV")
+    tab.set_title(2, "3. Importances")
+    tab.set_title(3, "4. Confusion & Class.")
+    tab.set_title(4, "5. Grille True vs Pred")
+    tab.set_title(5, "6. Corrélations")
+    tab.set_title(6, "7. ROC / PR / Seuil")
+
+    def on_eval_clicked(b):
+        import sys
+        main_ns = sys.modules['__main__'].__dict__
+        
+        if "df_res_widget" not in main_ns or "fitted_pipelines_widget" not in main_ns:
+            with tab.children[0]:
+                clear_output()
+                print("❌ Erreur : Veuillez d'abord exécuter l'entraînement des modèles !")
+            return
+
+        current_df_res = main_ns["df_res_widget"]
+        current_fitted_pipelines = main_ns["fitted_pipelines_widget"]
+        
+        updated_models = list(current_fitted_pipelines.keys())
+        select_models.options = updated_models
+        if not select_models.value or any(m not in updated_models for m in select_models.value):
+            select_models.value = updated_models[:min(2, len(updated_models))]
+
+        X_train, y_train = main_ns["X_train"], main_ns["y_train"]
+        X_test, y_test = main_ns["X_test"], main_ns["y_test"]
+
+        selected_metric = metrique_dropdown.value.lower()
+        current_top_n = top_n_models_slider.value
+        use_train = (dataset_dropdown.value == 'train')
+        seuil_actuel = seuil_slider.value
+        
+        X_eval, y_eval = (X_train, y_train) if use_train else (X_test, y_test)
+        dataset_label = "Entraînement (Train)" if use_train else "Test"
+
+        models_manuel = list(select_models.value)
+        colonnes_possibles = [c for c in current_df_res.columns if selected_metric in c.lower()]
+        colonne_selection = colonnes_possibles[0] if colonnes_possibles else current_df_res.columns[0]
+        
+        top_models_df = current_df_res.sort_values(by=colonne_selection, ascending=False).head(current_top_n)
+        models_top_n = top_models_df.index.tolist()
+        
+        active_models = list(set(models_manuel + models_top_n))
+
+        with tab.children[0]:
+            clear_output()
+            print(f"--- 1. Distribution des probabilités & Erreurs [{dataset_label}] (Seuil actif : {seuil_actuel}) ---")
+            print(f"Modèles analysés : {active_models}")
+
+        with tab.children[1]:
+            clear_output()
+            print(f"--- 2. Diagnostic global Overfitting ---")
+            display(current_df_res.loc[active_models, ['ROC_AUC_cv', 'ROC_AUC_cv_std', 'ROC_AUC_test', 'Diagnostic']])
+
+        for i in range(2, 4):
+            with tab.children[i]:
+                clear_output()
+                print(f"Analyse prête pour les modèles : {active_models}")
+
+        with tab.children[4]:
+            clear_output()
+            print(f"--- 5. Grille True vs Pred & Analyse détaillée des erreurs [{dataset_label}] (Seuil : {seuil_actuel}) ---")
+            if active_models:
+                nom_modele = active_models[0]
+                pipeline_actif = current_fitted_pipelines.get(nom_modele)
+                if pipeline_actif:
+                    print(f"Modèle affiché : {nom_modele}")
+                    try:
+                        tracer_sigmoide_et_erreurs(pipeline_actif, X_eval, y_eval, seuil=seuil_actuel)
+                    except Exception as e:
+                        print(f"Erreur lors du tracé : {e}")
+                    print("\n📋 Tableau détaillé des individus mal prédits :")
+                    df_err = afficher_analyse_erreurs_detaillees(pipeline_actif, X_eval, y_eval, seuil=seuil_actuel)
+                    if df_err.empty:
+                        print("🎉 Aucune erreur sur ce jeu de données avec ce seuil !")
+                    else:
+                        display(df_err)
+
+        for i in range(5, 7):
+            with tab.children[i]:
+                clear_output()
+                print(f"Analyse prête pour les modèles : {active_models}")
+
+    btn_eval.on_click(on_eval_clicked)
+
+    return widgets.VBox([
+        widgets.HBox([select_models, widgets.VBox([metrique_dropdown, top_n_models_slider])]),
+        widgets.HBox([seuil_slider, dataset_dropdown, btn_eval]),
+        tab
+    ])
+
+
+# ----------------------------------------------------------------------
+# 7. Widget UI pour l'étape de modélisation globale (AVEC PANNEAU PAR CATÉGORIE)
 # ----------------------------------------------------------------------
 def interface_modelisation_etape():
     dict_modeles_base = obtenir_modeles()
@@ -457,6 +653,13 @@ def interface_modelisation_etape():
         description="Répétitions :",
         style={"description_width": "initial"},
         layout=widgets.Layout(width="380px"),
+    )
+    slider_seuil = widgets.FloatSlider(
+        value=0.5, min=0.05, max=0.95, step=0.05,
+        description="Seuil de décision :",
+        style={"description_width": "initial"},
+        layout=widgets.Layout(width="380px"),
+        readout_format='.2f'
     )
 
     categories_modeles = {
@@ -537,7 +740,7 @@ def interface_modelisation_etape():
 
             models_a_tester = {
                 name: dict_modeles_base[name]
-                for btn_list in model_var_buttons.values()
+                for cat_name, btn_list in model_var_buttons.items()
                 for name, btn in btn_list
                 if btn.value
             }
@@ -547,19 +750,22 @@ def interface_modelisation_etape():
 
             methode = dropdown_cv_methode.value
             n_splits = slider_folds.value
+            n_repeats = slider_repeats.value
+
             if methode == "StratifiedKFold":
                 cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
             elif methode == "RepeatedStratifiedKFold":
-                cv = RepeatedStratifiedKFold(n_splits=n_splits, n_repeats=slider_repeats.value, random_state=42)
+                cv = RepeatedStratifiedKFold(n_splits=n_splits, n_repeats=n_repeats, random_state=42)
             else:
                 cv = KFold(n_splits=n_splits, shuffle=True, random_state=42)
 
             print(f"{methode} | {n_splits} folds | {len(models_a_tester)} modèle(s)\n")
             df_res_widget, fitted_pipelines_widget = evaluer_modeles(
                 X_train, y_train, X_test, y_test, preprocessor,
-                models=models_a_tester, cv=cv, verbose=True
+                models=models_a_tester, cv=cv, n_splits=n_splits, n_repeats=n_repeats, verbose=True
             )
 
+            main_ns["seuil_personnalise"] = slider_seuil.value
             main_ns["models"] = models_a_tester
             main_ns["cv"] = cv
             main_ns["df_res_widget"] = df_res_widget
@@ -571,6 +777,6 @@ def interface_modelisation_etape():
     btn_models.on_click(on_models)
 
     return widgets.VBox([
-        dropdown_cv_methode, slider_folds, slider_repeats,
+        dropdown_cv_methode, slider_folds, slider_repeats, slider_seuil,
         *model_ui_blocks, btn_models, out_models
     ])

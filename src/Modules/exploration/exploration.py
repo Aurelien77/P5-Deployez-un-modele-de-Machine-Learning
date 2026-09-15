@@ -699,6 +699,11 @@ def matrice_correlation(
     classement = classement_correlations(corr_p, corr_s)
     _afficher_classement_et_barres(classement, nom, max_paires_barchart)
     _plot_kde_paires_features(df_q, classement)
+    
+    # Ajout pour afficher la matrice de nuages pour ce DataFrame
+    top_vars = df_q.columns[:6].tolist()
+    plot_matrice_nuages(df, top_vars, cible=cible, nom=nom)
+
     return {"pearson": corr_p, "spearman": corr_s, "classement": classement}
 
 
@@ -946,7 +951,7 @@ def plot_matrice_nuages(
         data,
         vars=cols,
         hue=hue,
-        corner=True,
+        corner=False,
         diag_kind="hist",
         plot_kws={"alpha": 0.35, "s": 18, "edgecolor": "none"},
         diag_kws={"alpha": 0.7},
