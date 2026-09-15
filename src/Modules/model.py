@@ -1,6 +1,14 @@
 """
 Module regroupant les fonctions de modélisation pour la prédiction de
 l'attrition (a_quitte_l_entreprise).
+
+MISES A JOUR :
+- Ajout de la métrique PR_AUC_test (Precision-Recall AUC), plus robuste
+  que le ROC-AUC sur données déséquilibrées.
+- Ajout d'un sélecteur interactif d'objectif métier qui ne colore que
+  la colonne pertinente selon ce que l'on cherche à optimiser
+  (Recall / Precision / F1 / ROC-AUC / PR-AUC), au lieu de colorer
+  plusieurs colonnes en même temps.
 """
 
 import time
@@ -13,7 +21,10 @@ from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.model_selection import cross_val_score, train_test_split, StratifiedKFold, RepeatedStratifiedKFold, KFold
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
+from sklearn.metrics import (
+    accuracy_score, precision_score, recall_score, f1_score,
+    roc_auc_score, average_precision_score,
+)
 from sklearn.linear_model import LogisticRegression, RidgeClassifier
 from sklearn.svm import SVC, LinearSVC
 from sklearn.tree import DecisionTreeClassifier
@@ -124,7 +135,10 @@ def obtenir_modeles(random_state=42):
 
 
 # ----------------------------------------------------------------------
-# 4. Boucle d'évaluation (Train, CV, Test)
+# 4. Boucle d'évaluation (Train, CV, Test) — avec PR_AUC_test en plus
+# ----------------------------------------------------------------------
+# ----------------------------------------------------------------------
+# 4. Boucle d'évaluation (Train, CV, Test) — avec PR_AUC_test en plus
 # ----------------------------------------------------------------------
 def evaluer_modeles(X_train, y_train, X_test, y_test, preprocessor, models=None, cv=None, verbose=True):
     if models is None:
@@ -145,7 +159,7 @@ def evaluer_modeles(X_train, y_train, X_test, y_test, preprocessor, models=None,
         ])
 
         start_time = time.time()
-        
+
         # 1. Validation croisée sur le train
         cv_scores = cross_val_score(pipeline, X_train, y_train, cv=cv, scoring='roc_auc')
 
@@ -181,13 +195,11 @@ def evaluer_modeles(X_train, y_train, X_test, y_test, preprocessor, models=None,
         # --- Stockage des résultats Train & Test ---
         results.append({
             "Model": name,
-            # Métriques CV
             "ROC_AUC_cv": cv_scores.mean(),
-            # Métriques TRAIN (pour détecter l'overfitting)
             "ROC_AUC_train": roc_auc_score(y_train, y_train_proba) if len(set(y_train)) > 1 else 0.5,
             "Recall_train": recall_score(y_train, y_train_pred, zero_division=0),
-            # Métriques TEST
             "ROC_AUC_test": roc_auc_score(y_test, y_test_proba) if len(set(y_test)) > 1 else 0.5,
+            "PR_AUC_test": average_precision_score(y_test, y_test_proba) if len(set(y_test)) > 1 else 0.0,
             "Accuracy_test": accuracy_score(y_test, y_test_pred),
             "Precision_test": precision_score(y_test, y_test_pred, zero_division=0),
             "Recall_test": recall_score(y_test, y_test_pred, zero_division=0),
@@ -195,24 +207,164 @@ def evaluer_modeles(X_train, y_train, X_test, y_test, preprocessor, models=None,
             "Duration_s": duration,
         })
 
-    df_res = pd.DataFrame(results).set_index("Model").sort_values("ROC_AUC_cv", ascending=False)
+    df_res = pd.DataFrame(results).set_index("Model")
+    
+    # --- NOUVEAU : Ajout des écarts et du diagnostic ---
+    seuil_overfitting = 0.05
+    seuil_score_faible = 0.65
+
+    df_res['Ecart_Train_CV'] = df_res['ROC_AUC_train'] - df_res['ROC_AUC_cv']
+    df_res['Ecart_CV_Test'] = df_res['ROC_AUC_cv'] - df_res['ROC_AUC_test']
+
+    def _diagnostic(row):
+        if row['ROC_AUC_train'] < seuil_score_faible and row['ROC_AUC_cv'] < seuil_score_faible:
+            return "🟠 Sous-apprentissage"
+        elif row['Ecart_Train_CV'] > seuil_overfitting:
+            return "🔴 Surapprentissage"
+        elif row['Ecart_Train_CV'] < -seuil_overfitting:
+            return "🟣 Atypique (CV > Train)"
+        else:
+            return "🟢 Bien équilibré"
+
+    df_res['Diagnostic'] = df_res.apply(_diagnostic, axis=1)
+    # ---------------------------------------------------
+
+    df_res = df_res.sort_values("ROC_AUC_cv", ascending=False)
     return df_res, fitted_pipelines
-
-
 # ----------------------------------------------------------------------
-# 5. Affichage HTML stylé
+# 5. Affichage HTML stylé (statique, toutes colonnes clés colorées)
 # ----------------------------------------------------------------------
 def afficher_resultats(df_res, titre="📊 Comparatif des performances des modèles (Train vs CV vs Test)"):
     display(HTML(f"<h3>{titre}</h3>"))
     display(
         df_res.style
         .format(precision=3)
-        .background_gradient(subset=["ROC_AUC_cv", "ROC_AUC_train", "ROC_AUC_test", "F1_test"], cmap="Greens")
+        .background_gradient(subset=["ROC_AUC_cv", "ROC_AUC_train", "ROC_AUC_test", "PR_AUC_test", "F1_test"], cmap="Greens")
     )
 
 
 # ----------------------------------------------------------------------
-# 6. Widget UI pour l'étape du préprocesseur
+# 5bis. Objectifs métier disponibles pour le sélecteur interactif
+# ----------------------------------------------------------------------
+def get_objectifs_disponibles():
+    """
+    Chaque objectif pointe vers UNE colonne à mettre en avant (colorée en vert),
+    toutes les autres colonnes restent neutres.
+    """
+    return {
+        "recall_test": {
+            "label": "🎯 Détecter un maximum de départs (Recall)",
+            "description": (
+                "Priorise le Recall_test : on veut rater le moins de départs possible, "
+                "quitte à générer plus de fausses alertes (utile si une action de rétention "
+                "coûte peu comparé au coût d'un départ non anticipé)."
+            ),
+            "colonne": "Recall_test",
+        },
+        "precision_test": {
+            "label": "🎯 Limiter les fausses alertes (Precision)",
+            "description": (
+                "Priorise la Precision_test : on ne veut déclencher une action (offre, "
+                "entretien RH...) que sur des cas vraiment à risque, quitte à rater "
+                "certains départs (utile si l'action de rétention est coûteuse)."
+            ),
+            "colonne": "Precision_test",
+        },
+        "f1_test": {
+            "label": "⚖️ Compromis équilibré (F1-score)",
+            "description": (
+                "Priorise le F1_test : bon compromis par défaut entre Precision et "
+                "Recall, à utiliser si aucun des deux coûts (rater un départ / fausse "
+                "alerte) ne domine clairement l'autre."
+            ),
+            "colonne": "F1_test",
+        },
+        "roc_auc_test": {
+            "label": "📈 Pouvoir discriminant global (ROC-AUC)",
+            "description": (
+                "Priorise le ROC_AUC_test : mesure la capacité globale du modèle à "
+                "classer un partant au-dessus d'un non-partant, sur toutes les classes. "
+                "Moins informatif si la classe qui part est très minoritaire."
+            ),
+            "colonne": "ROC_AUC_test",
+        },
+        "pr_auc_test": {
+            "label": "📊 Discrimination sur la classe minoritaire (PR-AUC)",
+            "description": (
+                "Priorise le PR_AUC_test : recommandé pour l'attrition, car il se "
+                "concentre sur la capacité du modèle à bien classer la classe "
+                "minoritaire (les départs), même après stratification du split."
+            ),
+            "colonne": "PR_AUC_test",
+        },
+    }
+
+
+# ----------------------------------------------------------------------
+# 5ter. Stylisation dynamique : ne colore que la colonne de l'objectif choisi
+# ----------------------------------------------------------------------
+def styliser_resultats(df_res, objectif_key="f1_test"):
+    objectifs = get_objectifs_disponibles()
+    objectif = objectifs.get(objectif_key, objectifs["f1_test"])
+    colonne_cible = objectif["colonne"]
+
+    df_trie = df_res.sort_values(colonne_cible, ascending=False)
+
+    styled = (
+        df_trie.style
+        .format(precision=3)
+        .background_gradient(subset=[colonne_cible], cmap="Greens")
+    )
+    
+    # --- NOUVEAU : Coloration de la colonne d'écart si elle existe ---
+    if 'Ecart_Train_CV' in df_trie.columns:
+        styled = styled.background_gradient(subset=['Ecart_Train_CV'], cmap='RdYlGn_r')
+        
+    return styled, objectif, df_trie
+
+# ----------------------------------------------------------------------
+# 5quater. Widget interactif de sélection d'objectif métier
+# ----------------------------------------------------------------------
+def interface_choix_objectif(df_res):
+    """
+    Affiche un sélecteur d'objectif métier (Recall / Precision / F1 / ROC-AUC / PR-AUC).
+    Le tableau est re-coloré (une seule colonne verte) et re-trié selon le choix.
+    """
+    objectifs = get_objectifs_disponibles()
+
+    dropdown_objectif = widgets.Dropdown(
+        options=[(v["label"], k) for k, v in objectifs.items()],
+        value="f1_test",
+        description="Objectif :",
+        style={"description_width": "initial"},
+        layout=widgets.Layout(width="500px"),
+    )
+
+    out = widgets.Output()
+
+    def rafraichir(change=None):
+        with out:
+            clear_output()
+            styled, objectif, df_trie = styliser_resultats(df_res, dropdown_objectif.value)
+            display(HTML(
+                f"<div style='background-color:#eaf4ea;padding:10px;border-radius:6px;"
+                f"border:1px solid #c3e6cb;margin-bottom:8px;'>"
+                f"<b>{objectif['label']}</b><br>{objectif['description']}<br>"
+                f"<i>Tableau trié par {objectif['colonne']} décroissant. "
+                f"Meilleur modèle : {df_trie.index[0]} "
+                f"({objectif['colonne']} = {df_trie.iloc[0][objectif['colonne']]:.3f})</i>"
+                f"</div>"
+            ))
+            display(styled)
+
+    dropdown_objectif.observe(rafraichir, names="value")
+    rafraichir()  # affichage initial
+
+    return widgets.VBox([dropdown_objectif, out])
+
+
+# ----------------------------------------------------------------------
+# 6. Widget UI pour l'étape du préprocesseur (inchangé)
 # ----------------------------------------------------------------------
 def bouton_preprocesseur_etape(get_X_train_test_callback):
     btn_prep = widgets.Button(
@@ -240,7 +392,7 @@ def bouton_preprocesseur_etape(get_X_train_test_callback):
 
             from features_selection import obtenir_variables_selectionnees
             selection_par_groupe = obtenir_variables_selectionnees(var_buttons_local, par_groupe=True)
-            
+
             prep = construire_preprocessor(
                 colonnes_lineaires=selection_par_groupe.get("lineaires", []),
                 colonnes_non_lineaires=selection_par_groupe.get("non_lineaires", []),
@@ -253,19 +405,19 @@ def bouton_preprocesseur_etape(get_X_train_test_callback):
                 inclure_booleennes=True,
                 inclure_ratios=True,
             )
-            
+
             prep.fit(X_train)
             X_train_prep_local = prep.transform(X_train)
             X_test_prep_local = prep.transform(X_test)
-            
+
             main_ns["preprocessor"] = prep
             main_ns["X_train_prep"] = X_train_prep_local
             main_ns["X_test_prep"] = X_test_prep_local
-            
+
             print("Fit uniquement sur X_train (pas de fuite du test).")
             print(f"X_train transformé : {getattr(X_train_prep_local, 'shape', type(X_train_prep_local))}")
             print(f"X_test transformé  : {getattr(X_test_prep_local, 'shape', type(X_test_prep_local))}")
-            
+
             display(HTML("""
                 <div style="background-color: #d4edda; color: #155724; padding: 12px; border-radius: 6px; border: 1px solid #c3e6cb; margin-top: 10px; font-weight: bold; font-size: 14px;">
                     ✅ Étape 2 OK → Vous pouvez maintenant passer à la cellule de modélisation !
@@ -277,7 +429,8 @@ def bouton_preprocesseur_etape(get_X_train_test_callback):
 
 
 # ----------------------------------------------------------------------
-# 7. Widget UI pour l'étape de modélisation
+# 7. Widget UI pour l'étape de modélisation — appelle désormais
+#    l'interface interactive de choix d'objectif après le calcul
 # ----------------------------------------------------------------------
 def interface_modelisation_etape():
     dict_modeles_base = obtenir_modeles()
@@ -371,9 +524,9 @@ def interface_modelisation_etape():
             clear_output()
             import sys
             main_ns = sys.modules['__main__'].__dict__
-            
+
             if "preprocessor" not in main_ns or "X_train" not in main_ns:
-                print("Lance d’abord la cellule 1 puis la cellule 2.")
+                print("Lance d'abord la cellule 1 puis la cellule 2.")
                 return
 
             X_train = main_ns["X_train"]
@@ -406,14 +559,14 @@ def interface_modelisation_etape():
                 X_train, y_train, X_test, y_test, preprocessor,
                 models=models_a_tester, cv=cv, verbose=True
             )
-            
+
             main_ns["models"] = models_a_tester
             main_ns["cv"] = cv
             main_ns["df_res_widget"] = df_res_widget
             main_ns["fitted_pipelines_widget"] = fitted_pipelines_widget
 
-            afficher_resultats(df_res_widget)
-            print("\nModélisation terminée.")
+            print("\nModélisation terminée.\n")
+            display(interface_choix_objectif(df_res_widget))
 
     btn_models.on_click(on_models)
 

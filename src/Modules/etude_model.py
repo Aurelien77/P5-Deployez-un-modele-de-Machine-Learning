@@ -4,16 +4,22 @@ etude_model.py
 Module regroupant les analyses post-entraînement du modèle retenu pour la
 prédiction de l'attrition (a_quitte_l_entreprise) :
 
-- analyser_residus()                         : diagnostic des résidus (4 graphiques + tests statistiques)
-- distribution_probabilites_par_type() : distribution des probabilités prédites par modèle
-- comparer_train_test()                      : graphique en barres horizontales Train (CV) vs Test
+- analyser_residus()                       : diagnostic des résidus (4 graphiques + tests statistiques)
+- distribution_probabilites_par_type()     : distribution des probabilités prédites par modèle
+- comparer_train_test()                    : graphique en barres horizontales Train (CV) vs Test
 - importance_permutation()                 : classement des variables par importance (permutation importance)
-- analyser_distribution_erreurs()        : distribution globale des erreurs (histogramme & KDE)
-- afficher_grille_true_vs_pred()         : grille intelligente de graphiques True vs Predicted
+- analyser_distribution_erreurs()          : distribution globale des erreurs (histogramme & KDE)
+- afficher_grille_true_vs_pred()           : grille intelligente de graphiques True vs Predicted
 - importance_permutation_avec_erreur()     : permutation importance avec écart-type et affichage tabulaire
 - afficher_matrice_confusion()             : matrice de confusion sous forme de heatmap
 - analyser_correlations_features()         : matrices Pearson, Spearman, paires corrélées & pairplot
-- interface_etude_modeles_etape()          : interface interactive à 6 onglets avec choix Train/Test
+- tracer_courbe_roc()                      : courbes ROC superposées (plusieurs modèles)
+- tracer_courbe_precision_recall()         : courbes Precision-Recall superposées (avec baseline)
+- tracer_courbe_calibration()              : diagramme de fiabilité (probas prédites vs réelles)
+- tracer_courbe_apprentissage()            : learning curve (score Train vs CV selon taille échantillon) + verdict auto
+- analyser_seuil_optimal()                 : Precision / Recall / F1 en fonction du seuil de décision
+- diagnostiquer_overfitting_tableau()      : tableau récapitulatif Overfitting / Underfitting / Bien équilibré, tous modèles
+- interface_etude_modeles_etape()          : interface interactive à 7 onglets avec choix Train/Test
 
 Toutes les fonctions prennent le pipeline/modèle en paramètre explicite
 (jamais de variable globale implicite), pour éviter les erreurs de type
@@ -28,7 +34,12 @@ from matplotlib.lines import Line2D
 import seaborn as sns
 from scipy import stats
 from sklearn.inspection import permutation_importance
-from sklearn.metrics import confusion_matrix
+from sklearn.metrics import (
+    confusion_matrix, roc_curve, auc, precision_recall_curve,
+    average_precision_score, precision_score, recall_score, f1_score,
+)
+from sklearn.calibration import calibration_curve
+from sklearn.model_selection import learning_curve
 from IPython.display import display, clear_output
 import ipywidgets as widgets
 
@@ -226,12 +237,25 @@ def distribution_probabilites_par_type(fitted_pipelines, df_res, X_train, y_trai
 def comparer_train_test(
     df_res,
     top_model_names=None,
-    col_train='ROC_AUC_cv',
+    col_train='ROC_AUC_train',
+    col_cv='ROC_AUC_cv',
     col_test='ROC_AUC_test',
-    titre="Comparaison des performances Train (CV) vs Test (Top N)",
+    titre="Train (résubstitution) vs CV vs Test — diagnostic overfitting / underfitting",
     xlabel="Score",
-    xlim=(0.4, 1.0),
+    xlim=(0.4, 1.05),
+    seuil_overfitting=0.05,
+    seuil_score_faible=0.65,
 ):
+    """
+    Compare 3 scores par modèle :
+    - Train (résubstitution) : évalué sur les données mêmes qui ont servi à l'entraînement -> optimiste
+    - CV : moyenne des scores de validation croisée -> bonne estimation de généralisation
+    - Test : score sur le jeu de test jamais vu -> estimation finale
+
+    Un grand écart (Train >> CV/Test) = surapprentissage (overfitting).
+    Des scores faibles partout (Train ET Test) = sous-apprentissage (underfitting).
+    Des scores proches et élevés = modèle bien équilibré.
+    """
     if top_model_names is not None:
         df_plot = df_res.loc[df_res.index.intersection(top_model_names)]
         df_plot = df_plot.reindex([m for m in top_model_names if m in df_plot.index])
@@ -240,14 +264,39 @@ def comparer_train_test(
 
     modeles = df_plot.index.tolist()
     y_pos = np.arange(len(modeles))
-    hauteur = 0.35
+    hauteur = 0.26
 
-    fig, ax = plt.subplots(figsize=(9, max(len(modeles) * 0.6, 4)))
+    fig, ax = plt.subplots(figsize=(10.5, max(len(modeles) * 0.7, 4)))
 
-    ax.barh(y_pos + hauteur / 2, df_plot[col_train], height=hauteur,
-            color='skyblue', edgecolor='black', label='Train (CV Mean)')
-    ax.barh(y_pos - hauteur / 2, df_plot[col_test], height=hauteur,
-            color='green', edgecolor='black', label='Test')
+    ax.barh(y_pos + hauteur, df_plot[col_train], height=hauteur,
+            color='skyblue', edgecolor='black', label='Train (résubstitution)')
+    ax.barh(y_pos, df_plot[col_cv], height=hauteur,
+            color='goldenrod', edgecolor='black', label='CV (validation croisée)')
+    ax.barh(y_pos - hauteur, df_plot[col_test], height=hauteur,
+            color='seagreen', edgecolor='black', label='Test')
+
+    # Annotation du diagnostic à droite de chaque groupe de barres
+    for i, modele in enumerate(modeles):
+        train_score = df_plot.loc[modele, col_train]
+        cv_score = df_plot.loc[modele, col_cv]
+        test_score = df_plot.loc[modele, col_test]
+        ecart_cv = train_score - cv_score
+        ecart_test = train_score - test_score
+
+        if train_score < seuil_score_faible and cv_score < seuil_score_faible:
+            verdict, couleur = "Sous-apprentissage", "darkorange"
+        elif ecart_cv > seuil_overfitting:
+            verdict, couleur = "Surapprentissage", "crimson"
+        elif ecart_cv < -seuil_overfitting:
+            verdict, couleur = "Atypique (CV > train)", "purple"
+        else:
+            verdict, couleur = "Bien équilibré", "forestgreen"
+
+        ax.text(
+            max(train_score, cv_score, test_score) + 0.015, y_pos[i],
+            f"ΔCV={ecart_cv:+.3f}  ΔTest={ecart_test:+.3f}  {verdict}",
+            va='center', fontsize=8, color=couleur, fontweight='bold',
+        )
 
     ax.set_yticks(y_pos)
     ax.set_yticklabels(modeles)
@@ -255,10 +304,19 @@ def comparer_train_test(
     ax.set_xlim(xlim)
     ax.set_xlabel(xlabel)
     ax.set_title(titre)
-    ax.legend(loc='lower right')
+    ax.legend(loc='lower right', fontsize=8)
+    ax.grid(True, axis='x', linestyle=':', alpha=0.4)
 
     plt.tight_layout()
     plt.show()
+
+    print(
+        f"Lecture : ΔCV = Train - CV (signal principal de surapprentissage), "
+        f"ΔTest = Train - Test (confirmation sur le split final). "
+        f"Écart > {seuil_overfitting:.2f} → surapprentissage. "
+        f"Scores < {seuil_score_faible:.2f} partout → sous-apprentissage. "
+        f"Écarts proches de 0 avec scores élevés → bon équilibre."
+    )
 
 
 # ----------------------------------------------------------------------
@@ -572,10 +630,300 @@ def analyser_correlations_features(X, seuil_pearson=0.85):
 
 
 # ----------------------------------------------------------------------
-# Widget UI pour l'étape d'analyse approfondie des modèles (6 Onglets)
+# Utilitaire interne : extraction robuste des probabilités
+# ----------------------------------------------------------------------
+def _get_probas(pipeline, X):
+    if hasattr(pipeline, "predict_proba"):
+        return pipeline.predict_proba(X)[:, 1]
+    elif hasattr(pipeline, "decision_function"):
+        return 1 / (1 + np.exp(-pipeline.decision_function(X)))
+    else:
+        return pipeline.predict(X).astype(float)
+
+
+# ----------------------------------------------------------------------
+# 11. Courbe ROC (plusieurs modèles superposés)
+# ----------------------------------------------------------------------
+def tracer_courbe_roc(fitted_pipelines, X, y, model_names=None, figsize=(7, 6)):
+    """
+    Trace les courbes ROC de un ou plusieurs modèles sur le même graphique.
+    Complète le ROC_AUC_test déjà calculé en montrant la forme de la courbe
+    (et pas seulement l'aire sous la courbe).
+    """
+    if model_names is None:
+        model_names = list(fitted_pipelines.keys())
+
+    plt.figure(figsize=figsize)
+    for name in model_names:
+        pipeline = fitted_pipelines[name]
+        y_proba = _get_probas(pipeline, X)
+        fpr, tpr, _ = roc_curve(y, y_proba)
+        roc_auc = auc(fpr, tpr)
+        plt.plot(fpr, tpr, linewidth=2, label=f"{name} (AUC={roc_auc:.3f})")
+
+    plt.plot([0, 1], [0, 1], 'k--', alpha=0.5, label="Aléatoire (AUC=0.5)")
+    plt.xlabel("Taux de faux positifs (1 - Spécificité)")
+    plt.ylabel("Taux de vrais positifs (Recall)")
+    plt.title("Courbes ROC")
+    plt.legend(fontsize=8, loc="lower right")
+    plt.grid(True, linestyle=":", alpha=0.4)
+    plt.tight_layout()
+    plt.show()
+
+
+# ----------------------------------------------------------------------
+# 12. Courbe Precision-Recall (plusieurs modèles superposés, avec baseline)
+# ----------------------------------------------------------------------
+def tracer_courbe_precision_recall(fitted_pipelines, X, y, model_names=None, figsize=(7, 6)):
+    """
+    Trace les courbes Precision-Recall — plus informatives que la ROC quand
+    la classe positive (les départs) est minoritaire, ce qui est typiquement
+    le cas pour l'attrition.
+    """
+    if model_names is None:
+        model_names = list(fitted_pipelines.keys())
+
+    plt.figure(figsize=figsize)
+    for name in model_names:
+        pipeline = fitted_pipelines[name]
+        y_proba = _get_probas(pipeline, X)
+        precision, recall, _ = precision_recall_curve(y, y_proba)
+        pr_auc = average_precision_score(y, y_proba)
+        plt.plot(recall, precision, linewidth=2, label=f"{name} (PR-AUC={pr_auc:.3f})")
+
+    baseline = np.mean(np.asarray(y) == 1)
+    plt.axhline(baseline, color='k', linestyle='--', alpha=0.5,
+                label=f"Baseline (taux de départs = {baseline:.3f})")
+
+    plt.xlabel("Recall (rappel)")
+    plt.ylabel("Precision")
+    plt.title("Courbes Precision-Recall")
+    plt.legend(fontsize=8, loc="upper right")
+    plt.grid(True, linestyle=":", alpha=0.4)
+    plt.tight_layout()
+    plt.show()
+
+
+# ----------------------------------------------------------------------
+# 13. Courbe de calibration (reliability diagram)
+# ----------------------------------------------------------------------
+def tracer_courbe_calibration(fitted_pipelines, X, y, model_names=None, n_bins=10, figsize=(7, 6)):
+    """
+    Vérifie si les probabilités prédites reflètent la réalité (ex : parmi
+    les personnes pour lesquelles le modèle prédit 70% de risque de départ,
+    est-ce qu'environ 70% partent réellement ?). Important si les
+    probabilités sont utilisées pour prioriser des actions RH plutôt que
+    la seule classe 0/1.
+    """
+    if model_names is None:
+        model_names = list(fitted_pipelines.keys())
+
+    plt.figure(figsize=figsize)
+    for name in model_names:
+        pipeline = fitted_pipelines[name]
+        y_proba = _get_probas(pipeline, X)
+        prob_true, prob_pred = calibration_curve(y, y_proba, n_bins=n_bins, strategy='quantile')
+        plt.plot(prob_pred, prob_true, marker='o', linewidth=2, label=name)
+
+    plt.plot([0, 1], [0, 1], 'k--', alpha=0.5, label="Calibration parfaite")
+    plt.xlabel("Probabilité moyenne prédite")
+    plt.ylabel("Fréquence réelle observée")
+    plt.title("Courbe de calibration (reliability diagram)")
+    plt.legend(fontsize=8, loc="upper left")
+    plt.grid(True, linestyle=":", alpha=0.4)
+    plt.tight_layout()
+    plt.show()
+
+
+# ----------------------------------------------------------------------
+# 14. Courbe d'apprentissage (learning curve)
+# ----------------------------------------------------------------------
+def tracer_courbe_apprentissage(
+    pipeline, X, y, cv=5, scoring='roc_auc',
+    train_sizes=np.linspace(0.1, 1.0, 8), nom_modele=None, n_jobs=-1,
+    seuil_overfitting=0.05, seuil_score_faible=0.65,
+):
+    """
+    Montre l'évolution du score Train et du score CV selon la taille de
+    l'échantillon d'entraînement.
+
+    Comment lire cette courbe :
+    - Les deux courbes restent basses et proches -> sous-apprentissage
+      (le modèle est trop simple, plus de données n'aidera pas ; il faut
+      un modèle plus complexe ou de meilleures features).
+    - Écart large et persistant entre Train (haut) et CV (bas) -> surapprentissage
+      (le modèle mémorise ; régulariser, simplifier, ou ajouter des données peut aider).
+    - Les deux courbes convergent vers un score élevé -> bon équilibre.
+    """
+    train_sizes_abs, train_scores, test_scores = learning_curve(
+        pipeline, X, y, cv=cv, scoring=scoring,
+        train_sizes=train_sizes, n_jobs=n_jobs,
+    )
+
+    train_mean, train_std = train_scores.mean(axis=1), train_scores.std(axis=1)
+    test_mean, test_std = test_scores.mean(axis=1), test_scores.std(axis=1)
+    ecart_final = train_mean[-1] - test_mean[-1]
+
+    if train_mean[-1] < seuil_score_faible and test_mean[-1] < seuil_score_faible:
+        verdict = "Sous-apprentissage (scores faibles même sur le train)"
+        couleur_verdict = "darkorange"
+    elif ecart_final > seuil_overfitting:
+        verdict = "Surapprentissage (le Train reste nettement au-dessus du CV)"
+        couleur_verdict = "crimson"
+    else:
+        verdict = "Bien équilibré (les courbes convergent)"
+        couleur_verdict = "forestgreen"
+
+    plt.figure(figsize=(8.5, 5.5))
+    plt.plot(train_sizes_abs, train_mean, 'o-', color='steelblue', label='Score Train')
+    plt.fill_between(train_sizes_abs, train_mean - train_std, train_mean + train_std,
+                      alpha=0.15, color='steelblue')
+    plt.plot(train_sizes_abs, test_mean, 'o-', color='darkorange', label='Score CV')
+    plt.fill_between(train_sizes_abs, test_mean - test_std, test_mean + test_std,
+                      alpha=0.15, color='darkorange')
+
+    # Zone verticale hachurée entre les deux courbes au dernier point = écart final visible
+    plt.vlines(train_sizes_abs[-1], test_mean[-1], train_mean[-1],
+               color=couleur_verdict, linestyle=':', linewidth=2)
+    plt.annotate(
+        f"Δ final = {ecart_final:+.3f}",
+        xy=(train_sizes_abs[-1], (train_mean[-1] + test_mean[-1]) / 2),
+        xytext=(-90, 0), textcoords='offset points',
+        color=couleur_verdict, fontsize=9, fontweight='bold',
+        arrowprops=dict(arrowstyle='-', color=couleur_verdict, alpha=0.6),
+    )
+
+    titre = f"Courbe d'apprentissage — {nom_modele}" if nom_modele else "Courbe d'apprentissage"
+    plt.title(titre)
+    plt.xlabel("Taille de l'échantillon d'entraînement")
+    plt.ylabel(f"Score ({scoring})")
+    plt.legend(loc="best")
+    plt.grid(True, linestyle=":", alpha=0.4)
+    plt.figtext(0.5, -0.02, f"Diagnostic : {verdict}", ha='center', fontsize=10,
+                color=couleur_verdict, fontweight='bold')
+    plt.tight_layout()
+    plt.show()
+
+    print(f"Score Train final : {train_mean[-1]:.3f} | Score CV final : {test_mean[-1]:.3f} | "
+          f"Écart Δ : {ecart_final:+.3f}")
+    print(f"Diagnostic : {verdict}")
+
+
+# ----------------------------------------------------------------------
+# 15. Analyse du seuil optimal (Precision / Recall / F1 vs seuil)
+# ----------------------------------------------------------------------
+def analyser_seuil_optimal(
+    pipeline, X, y, nom_modele=None,
+    thresholds=np.linspace(0.05, 0.95, 19), figsize=(9, 5),
+):
+    """
+    Calcule Precision, Recall et F1 pour une grille de seuils de décision
+    (par défaut le modèle utilise 0.5). Utile pour choisir un seuil différent
+    selon l'objectif métier retenu (détecter un max de départs -> Recall,
+    limiter les fausses alertes -> Precision, compromis -> F1).
+    """
+    y_proba = _get_probas(pipeline, X)
+    y_true = np.asarray(y)
+
+    lignes = []
+    for t in thresholds:
+        y_pred = (y_proba >= t).astype(int)
+        lignes.append({
+            "Seuil": t,
+            "Precision": precision_score(y_true, y_pred, zero_division=0),
+            "Recall": recall_score(y_true, y_pred, zero_division=0),
+            "F1": f1_score(y_true, y_pred, zero_division=0),
+        })
+    df_seuils = pd.DataFrame(lignes)
+
+    plt.figure(figsize=figsize)
+    plt.plot(df_seuils["Seuil"], df_seuils["Precision"], marker='o', label="Precision")
+    plt.plot(df_seuils["Seuil"], df_seuils["Recall"], marker='o', label="Recall")
+    plt.plot(df_seuils["Seuil"], df_seuils["F1"], marker='o', label="F1-score")
+    plt.axvline(0.5, color='grey', linestyle='--', alpha=0.6, label="Seuil par défaut (0.5)")
+
+    titre = f"Precision / Recall / F1 selon le seuil — {nom_modele}" if nom_modele else "Precision / Recall / F1 selon le seuil"
+    plt.title(titre)
+    plt.xlabel("Seuil de décision")
+    plt.ylabel("Score")
+    plt.legend(loc="best")
+    plt.grid(True, linestyle=":", alpha=0.4)
+    plt.tight_layout()
+    plt.show()
+
+    meilleur_f1 = df_seuils.loc[df_seuils["F1"].idxmax()]
+    meilleur_recall_a_precision_ok = df_seuils.loc[df_seuils["Recall"].idxmax()]
+    print(f"Seuil maximisant le F1 : {meilleur_f1['Seuil']:.2f} "
+          f"(Precision={meilleur_f1['Precision']:.3f}, Recall={meilleur_f1['Recall']:.3f}, F1={meilleur_f1['F1']:.3f})")
+    print(f"Seuil maximisant le Recall : {meilleur_recall_a_precision_ok['Seuil']:.2f} "
+          f"(Precision={meilleur_recall_a_precision_ok['Precision']:.3f}, Recall={meilleur_recall_a_precision_ok['Recall']:.3f})")
+
+    return df_seuils
+
+
+# ----------------------------------------------------------------------
+# 16. Diagnostic overfitting / underfitting — tableau récapitulatif (tous modèles)
+# ----------------------------------------------------------------------
+def diagnostiquer_overfitting_tableau(
+    df_res, col_train='ROC_AUC_train', col_cv='ROC_AUC_cv', col_test='ROC_AUC_test',
+    seuil_overfitting=0.05, seuil_score_faible=0.65, seuil_instabilite=0.05,
+):
+    """
+    Classe automatiquement CHAQUE modèle du tableau de résultats en :
+    - 🔴 Surapprentissage : Train nettement au-dessus de la CV (signal principal,
+      car la CV moyenne plusieurs découpages et est plus fiable qu'un seul split Test)
+    - 🟠 Sous-apprentissage : scores faibles à la fois sur Train et sur la CV
+    - 🔵 Estimation instable : CV et Test s'écartent fortement l'un de l'autre
+      (le split Test n'est peut-être pas représentatif, ou le dataset est petit —
+      à interpréter avec prudence)
+    - 🟣 Atypique : CV > Train (rare)
+    - 🟢 Bien équilibré : scores proches et satisfaisants
+
+    Contrairement à afficher_resultats() qui colore plusieurs colonnes en vert,
+    ce tableau ne met en avant que les écarts (Train-CV, Train-Test, CV-Test) et
+    le verdict, pour une lecture directe du sur/sous-apprentissage.
+    """
+    df = df_res[[col_train, col_cv, col_test]].copy()
+    df['Ecart_Train_CV'] = df[col_train] - df[col_cv]
+    df['Ecart_Train_Test'] = df[col_train] - df[col_test]
+    df['Ecart_CV_Test'] = df[col_cv] - df[col_test]
+
+    def _diagnostic(row):
+        train_faible = row[col_train] < seuil_score_faible
+        cv_faible = row[col_cv] < seuil_score_faible
+        if train_faible and cv_faible:
+            return "🟠 Sous-apprentissage"
+        elif row['Ecart_Train_CV'] > seuil_overfitting:
+            return "🔴 Surapprentissage"
+        elif abs(row['Ecart_CV_Test']) > seuil_instabilite:
+            return "🔵 Estimation instable (CV ≠ Test)"
+        elif row['Ecart_Train_CV'] < -seuil_overfitting:
+            return "🟣 Atypique (CV > Train)"
+        else:
+            return "🟢 Bien équilibré"
+
+    df['Diagnostic'] = df.apply(_diagnostic, axis=1)
+    df = df.sort_values('Ecart_Train_CV', ascending=False)
+
+    display(
+        df.style
+        .format(precision=3)
+        .background_gradient(subset=['Ecart_Train_CV'], cmap='RdYlGn_r')
+        .background_gradient(subset=['Ecart_CV_Test'], cmap='PuOr', vmin=-0.15, vmax=0.15)
+    )
+    print(
+        f"Seuils utilisés : Ecart_Train_CV > {seuil_overfitting:.2f} → surapprentissage ; "
+        f"scores < {seuil_score_faible:.2f} sur Train ET CV → sous-apprentissage ; "
+        f"|Ecart_CV_Test| > {seuil_instabilite:.2f} → estimation instable (le Test s'écarte trop de la CV)."
+    )
+    return df
+
+
+# ----------------------------------------------------------------------
+# Widget UI pour l'étape d'analyse approfondie des modèles (7 Onglets)
 # ----------------------------------------------------------------------
 def interface_etude_modeles_etape():
-    """Crée l'interface complète avec 6 onglets et un choix Train/Test pour l'analyse approfondie."""
+    """Crée l'interface complète avec 7 onglets et un choix Train/Test pour l'analyse approfondie."""
     
     try:
         import sys
@@ -585,7 +933,7 @@ def interface_etude_modeles_etape():
         max_models = 5 
 
     metrique_dropdown = widgets.Dropdown(
-        options=['Recall', 'F1', 'ROC_AUC', 'Precision', 'Accuracy'],
+        options=['Recall', 'F1', 'ROC_AUC', 'Precision', 'Accuracy', 'PR_AUC'],
         value='Recall',
         description='Métrique :',
         style={'description_width': 'initial'},
@@ -616,8 +964,8 @@ def interface_etude_modeles_etape():
         layout=widgets.Layout(width='300px', height='40px')
     )
 
-    # Création de 6 onglets
-    tab_contents = [widgets.Output(), widgets.Output(), widgets.Output(), widgets.Output(), widgets.Output(), widgets.Output()]
+    # Création de 7 onglets
+    tab_contents = [widgets.Output() for _ in range(7)]
     tab = widgets.Tab()
     tab.children = tab_contents
     tab.set_title(0, "1. Probas & Erreurs")
@@ -626,6 +974,7 @@ def interface_etude_modeles_etape():
     tab.set_title(3, "4. Matrices de confusion")
     tab.set_title(4, "5. Grille True vs Pred")
     tab.set_title(5, "6. Corrélations & Pairplot")
+    tab.set_title(6, "7. ROC / PR / Calibration / Seuil")
 
     def on_eval_clicked(b):
         import sys
@@ -669,12 +1018,15 @@ def interface_etude_modeles_etape():
         # --- Onglet 1 : Résidus & Comparaison Train/Test ---
         with tab.children[1]:
             clear_output()
-            print(f"--- 2. Analyse des résidus [{dataset_label}] ---")
+            print(f"--- 2. Diagnostic surapprentissage / sous-apprentissage — TOUS les modèles ---")
+            diagnostiquer_overfitting_tableau(current_df_res)
+
+            print(f"\n--- 3. Train (résubstitution) vs CV vs Test — Top {current_top_n} ---")
+            comparer_train_test(current_df_res, top_model_names=top_model_names)
+
+            print(f"\n--- 4. Analyse des résidus [{dataset_label}] ---")
             for nom_modele in top_model_names:
                 analyser_residus(current_fitted_pipelines[nom_modele], X_eval, y_eval, nom_modele=f"{nom_modele} ({dataset_label})")
-            
-            print(f"\n--- 3. Comparaison Train (CV) vs Test (Global) ---")
-            comparer_train_test(current_df_res, top_model_names=top_model_names)
 
         # --- Onglet 2 : Importances ---
         with tab.children[2]:
@@ -706,6 +1058,29 @@ def interface_etude_modeles_etape():
             clear_output()
             print(f"--- 8. Analyse des corrélations & Pairplot [{dataset_label}] ---")
             analyser_correlations_features(X_eval, seuil_pearson=0.85)
+
+        # --- Onglet 6 : ROC / PR / Calibration / Learning curve / Seuil optimal ---
+        with tab.children[6]:
+            clear_output()
+            print(f"--- 9. Courbe ROC [{dataset_label}] (Top {current_top_n}) ---")
+            tracer_courbe_roc(current_fitted_pipelines, X_eval, y_eval, model_names=top_model_names)
+
+            print(f"\n--- 10. Courbe Precision-Recall [{dataset_label}] (Top {current_top_n}) ---")
+            tracer_courbe_precision_recall(current_fitted_pipelines, X_eval, y_eval, model_names=top_model_names)
+
+            print(f"\n--- 11. Courbe de calibration [{dataset_label}] (Top {current_top_n}) ---")
+            tracer_courbe_calibration(current_fitted_pipelines, X_eval, y_eval, model_names=top_model_names)
+
+            print(f"\n--- 12. Courbe d'apprentissage (sur le meilleur modèle du Top {current_top_n}) ---")
+            meilleur_modele = top_model_names[0]
+            tracer_courbe_apprentissage(
+                current_fitted_pipelines[meilleur_modele], X_eval, y_eval,
+                scoring='roc_auc', nom_modele=meilleur_modele,
+            )
+
+            print(f"\n--- 13. Seuil optimal (Precision / Recall / F1 vs seuil) ---")
+            for nom_modele in top_model_names:
+                analyser_seuil_optimal(current_fitted_pipelines[nom_modele], X_eval, y_eval, nom_modele=f"{nom_modele} ({dataset_label})")
 
     btn_eval.on_click(on_eval_clicked)
 
