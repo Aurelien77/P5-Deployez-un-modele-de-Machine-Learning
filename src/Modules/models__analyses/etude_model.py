@@ -42,6 +42,117 @@ from sklearn.calibration import calibration_curve
 from sklearn.model_selection import learning_curve
 from IPython.display import display, clear_output
 import ipywidgets as widgets
+from collections import OrderedDict
+
+# Réutilise la catégorisation des modèles définie dans model.py si le module
+# est disponible dans le même package ; sinon, on retombe sur une copie locale
+# autonome pour que ce module reste indépendant.
+try:
+    from model import obtenir_categories_modeles, creer_selecteur_modeles_categorise, obtenir_modeles
+    _NOMS_MODELES_DEFAUT = list(obtenir_modeles().keys())
+except ImportError:
+    _NOMS_MODELES_DEFAUT = [
+        "Dummy_Stratified", "LogisticRegression_None", "LogisticRegression_L1", "LogisticRegression_L2",
+        "Ridge", "ElasticNet_LogReg", "DecisionTree", "RandomForest", "GradientBoosting", "AdaBoost",
+        "XGBoost", "SVC_Prob", "SVC_RBF", "SVC_Linear", "SVC_Poly", "SVR_Linear", "KNN",
+    ]
+
+    CATEGORIES_MODELES = OrderedDict([
+        ("Référence (Baseline)", ["Dummy_Stratified"]),
+        ("Linéaires & Régularisés", [
+            "LogisticRegression_None", "LogisticRegression_L1", "LogisticRegression_L2",
+            "Ridge", "ElasticNet_LogReg", "SVR_Linear",
+        ]),
+        ("Arbres & Boosting", [
+            "DecisionTree", "RandomForest", "GradientBoosting", "AdaBoost", "XGBoost",
+        ]),
+        ("Autres (SVM, KNN)", [
+            "SVC_Prob", "SVC_RBF", "SVC_Linear", "SVC_Poly", "KNN",
+        ]),
+    ])
+
+    def obtenir_categories_modeles(noms_modeles=None):
+        if noms_modeles is None:
+            noms_modeles = [m for modeles in CATEGORIES_MODELES.values() for m in modeles]
+        noms_set = set(noms_modeles)
+        resultat = OrderedDict()
+        deja_places = set()
+        for categorie, modeles in CATEGORIES_MODELES.items():
+            presents = [m for m in modeles if m in noms_set]
+            if presents:
+                resultat[categorie] = presents
+                deja_places.update(presents)
+        non_classes = [m for m in noms_modeles if m not in deja_places]
+        if non_classes:
+            resultat["Autres"] = non_classes
+        return resultat
+
+    def creer_selecteur_modeles_categorise(noms_modeles, valeurs_par_defaut=None, categories=None):
+        if categories is None:
+            categories = obtenir_categories_modeles(noms_modeles)
+        valeurs_par_defaut = set(noms_modeles) if valeurs_par_defaut is None else set(valeurs_par_defaut)
+
+        checkboxes = OrderedDict()
+        panneaux, titres = [], []
+
+        def _handler_cocher(cases, valeur):
+            def handler(b):
+                for c in cases:
+                    c.value = valeur
+            return handler
+
+        for categorie, modeles in categories.items():
+            cases_categorie = []
+            for nom in modeles:
+                cb = widgets.Checkbox(
+                    value=(nom in valeurs_par_defaut), description=nom,
+                    indent=False, layout=widgets.Layout(width='auto'),
+                )
+                checkboxes[nom] = cb
+                cases_categorie.append(cb)
+
+            btn_tout = widgets.Button(description="Tout cocher", button_style='info',
+                                       layout=widgets.Layout(width='110px'))
+            btn_rien = widgets.Button(description="Tout décocher",
+                                       layout=widgets.Layout(width='110px'))
+            btn_tout.on_click(_handler_cocher(cases_categorie, True))
+            btn_rien.on_click(_handler_cocher(cases_categorie, False))
+
+            panneaux.append(widgets.VBox([widgets.HBox([btn_tout, btn_rien])] + cases_categorie))
+            titres.append(f"{categorie} ({len(modeles)})")
+
+        accordion = widgets.Accordion(children=panneaux)
+        for i, titre in enumerate(titres):
+            accordion.set_title(i, titre)
+        if panneaux:
+            accordion.selected_index = 0
+
+        label_compteur = widgets.Label()
+
+        def _maj_compteur(change=None):
+            n = sum(cb.value for cb in checkboxes.values())
+            label_compteur.value = f"{n} / {len(checkboxes)} modèle(s) sélectionné(s)"
+
+        for cb in checkboxes.values():
+            cb.observe(_maj_compteur, names='value')
+        _maj_compteur()
+
+        btn_tout_global = widgets.Button(description="✅ Tout sélectionner", button_style='success',
+                                          layout=widgets.Layout(width='170px'))
+        btn_rien_global = widgets.Button(description="❌ Tout désélectionner", button_style='danger',
+                                          layout=widgets.Layout(width='170px'))
+        btn_tout_global.on_click(_handler_cocher(list(checkboxes.values()), True))
+        btn_rien_global.on_click(_handler_cocher(list(checkboxes.values()), False))
+
+        conteneur = widgets.VBox([
+            widgets.HBox([btn_tout_global, btn_rien_global, label_compteur]),
+            accordion,
+        ])
+
+        def get_selection():
+            return [nom for nom, cb in checkboxes.items() if cb.value]
+
+        return conteneur, get_selection
 
 # ----------------------------------------------------------------------
 # 1. Analyse des résidus
@@ -810,166 +921,6 @@ def tracer_courbe_apprentissage(
 
 
 # ----------------------------------------------------------------------
-# 15. Analyse du seuil optimal (Precision / Recall / F1 vs seuil)
-# ----------------------------------------------------------------------
-def analyser_seuil_optimal(
-    pipeline, X, y, nom_modele=None,
-    thresholds=np.linspace(0.05, 0.95, 19), figsize=(9, 5),
-):
-    """
-    Calcule Precision, Recall et F1 pour une grille de seuils de décision
-    (par défaut le modèle utilise 0.5). Utile pour choisir un seuil différent
-    selon l'objectif métier retenu (détecter un max de départs -> Recall,
-    limiter les fausses alertes -> Precision, compromis -> F1).
-    """
-    y_proba = _get_probas(pipeline, X)
-    y_true = np.asarray(y)
-
-    lignes = []
-    for t in thresholds:
-        y_pred = (y_proba >= t).astype(int)
-        lignes.append({
-            "Seuil": t,
-            "Precision": precision_score(y_true, y_pred, zero_division=0),
-            "Recall": recall_score(y_true, y_pred, zero_division=0),
-            "F1": f1_score(y_true, y_pred, zero_division=0),
-        })
-    df_seuils = pd.DataFrame(lignes)
-
-    plt.figure(figsize=figsize)
-    plt.plot(df_seuils["Seuil"], df_seuils["Precision"], marker='o', label="Precision")
-    plt.plot(df_seuils["Seuil"], df_seuils["Recall"], marker='o', label="Recall")
-    plt.plot(df_seuils["Seuil"], df_seuils["F1"], marker='o', label="F1-score")
-    plt.axvline(0.5, color='grey', linestyle='--', alpha=0.6, label="Seuil par défaut (0.5)")
-
-    titre = f"Precision / Recall / F1 selon le seuil — {nom_modele}" if nom_modele else "Precision / Recall / F1 selon le seuil"
-    plt.title(titre)
-    plt.xlabel("Seuil de décision")
-    plt.ylabel("Score")
-    plt.legend(loc="best")
-    plt.grid(True, linestyle=":", alpha=0.4)
-    plt.tight_layout()
-    plt.show()
-
-    meilleur_f1 = df_seuils.loc[df_seuils["F1"].idxmax()]
-    meilleur_recall_a_precision_ok = df_seuils.loc[df_seuils["Recall"].idxmax()]
-    print(f"Seuil maximisant le F1 : {meilleur_f1['Seuil']:.2f} "
-          f"(Precision={meilleur_f1['Precision']:.3f}, Recall={meilleur_f1['Recall']:.3f}, F1={meilleur_f1['F1']:.3f})")
-    print(f"Seuil maximisant le Recall : {meilleur_recall_a_precision_ok['Seuil']:.2f} "
-          f"(Precision={meilleur_recall_a_precision_ok['Precision']:.3f}, Recall={meilleur_recall_a_precision_ok['Recall']:.3f})")
-
-    return df_seuils
-
-
-# ----------------------------------------------------------------------
-# 16. Diagnostic overfitting / underfitting — tableau récapitulatif (tous modèles)
-# ----------------------------------------------------------------------
-def diagnostiquer_overfitting_tableau(
-    df_res, col_train='ROC_AUC_train', col_cv='ROC_AUC_cv', col_test='ROC_AUC_test',
-    seuil_overfitting=0.05, seuil_score_faible=0.65, seuil_instabilite=0.05,
-):
-    """
-    Classe automatiquement CHAQUE modèle du tableau de résultats en :
-    - 🔴 Surapprentissage : Train nettement au-dessus de la CV (signal principal,
-      car la CV moyenne plusieurs découpages et est plus fiable qu'un seul split Test)
-    - 🟠 Sous-apprentissage : scores faibles à la fois sur Train et sur la CV
-    - 🔵 Estimation instable : CV et Test s'écartent fortement l'un de l'autre
-      (le split Test n'est peut-être pas représentatif, ou le dataset est petit —
-      à interpréter avec prudence)
-    - 🟣 Atypique : CV > Train (rare)
-    - 🟢 Bien équilibré : scores proches et satisfaisants
-
-    Contrairement à afficher_resultats() qui colore plusieurs colonnes en vert,
-    ce tableau ne met en avant que les écarts (Train-CV, Train-Test, CV-Test) et
-    le verdict, pour une lecture directe du sur/sous-apprentissage.
-    """
-    df = df_res[[col_train, col_cv, col_test]].copy()
-    df['Ecart_Train_CV'] = df[col_train] - df[col_cv]
-    df['Ecart_Train_Test'] = df[col_train] - df[col_test]
-    df['Ecart_CV_Test'] = df[col_cv] - df[col_test]
-
-    def _diagnostic(row):
-        train_faible = row[col_train] < seuil_score_faible
-        cv_faible = row[col_cv] < seuil_score_faible
-        if train_faible and cv_faible:
-            return "🟠 Sous-apprentissage"
-        elif row['Ecart_Train_CV'] > seuil_overfitting:
-            return "🔴 Surapprentissage"
-        elif abs(row['Ecart_CV_Test']) > seuil_instabilite:
-            return "🔵 Estimation instable (CV ≠ Test)"
-        elif row['Ecart_Train_CV'] < -seuil_overfitting:
-            return "🟣 Atypique (CV > Train)"
-        else:
-            return "🟢 Bien équilibré"
-
-    df['Diagnostic'] = df.apply(_diagnostic, axis=1)
-    df = df.sort_values('Ecart_Train_CV', ascending=False)
-
-    display(
-        df.style
-        .format(precision=3)
-        .background_gradient(subset=['Ecart_Train_CV'], cmap='RdYlGn_r')
-        .background_gradient(subset=['Ecart_CV_Test'], cmap='PuOr', vmin=-0.15, vmax=0.15)
-    )
-    print(
-        f"Seuils utilisés : Ecart_Train_CV > {seuil_overfitting:.2f} → surapprentissage ; "
-        f"scores < {seuil_score_faible:.2f} sur Train ET CV → sous-apprentissage ; "
-        f"|Ecart_CV_Test| > {seuil_instabilite:.2f} → estimation instable (le Test s'écarte trop de la CV)."
-    )
-    return df
-
-# ----------------------------------------------------------------------
-# 14. Courbe d'apprentissage (learning curve) - Suite et fin
-# ----------------------------------------------------------------------
-    # - Un grand écart persistant entre train et CV -> surapprentissage
-    #   (le modèle a besoin de plus de données ou d'une régularisation plus forte).
-    # - Les deux courbes convergent vers un bon score élevé -> modèle optimal.
-    # """
-    train_sizes_abs, train_scores, test_scores = learning_curve(
-        pipeline, X, y, cv=cv, scoring=scoring,
-        train_sizes=train_sizes, n_jobs=n_jobs, random_state=42
-    )
-
-    train_scores_mean = np.mean(train_scores, axis=1)
-    train_scores_std = np.std(train_scores, axis=1)
-    test_scores_mean = np.mean(test_scores, axis=1)
-    test_scores_std = np.std(test_scores, axis=1)
-
-    plt.figure(figsize=(8, 5))
-    plt.title(f"Courbe d'apprentissage{f' — {nom_modele}' if nom_modele else ''}")
-    plt.xlabel("Taille de l'échantillon d'entraînement")
-    plt.ylabel(f"Score ({scoring})")
-    plt.grid(True, linestyle=":", alpha=0.5)
-
-    plt.fill_between(train_sizes_abs, train_scores_mean - train_scores_std,
-                     train_scores_mean + train_scores_std, alpha=0.1, color="blue")
-    plt.fill_between(train_sizes_abs, test_scores_mean - test_scores_std,
-                     test_scores_mean + test_scores_std, alpha=0.1, color="orange")
-
-    plt.plot(train_sizes_abs, train_scores_mean, 'o-', color="blue", label="Score entraînement")
-    plt.plot(train_sizes_abs, test_scores_mean, 'o-', color="orange", label="Score validation croisée")
-
-    plt.legend(loc="best")
-    plt.tight_layout()
-    plt.show()
-
-    # Verdict automatique
-    dernier_train = train_scores_mean[-1]
-    dernier_cv = test_scores_mean[-1]
-    ecart = dernier_train - dernier_cv
-
-    print("\n--- Diagnostic automatique de la courbe d'apprentissage ---")
-    print(f"Score final Train : {dernier_train:.4f} | Score final CV : {dernier_cv:.4f} | Écart : {ecart:.4f}")
-
-    if dernier_train < seuil_score_faible and dernier_cv < seuil_score_faible:
-        print("➡️ Verdict : SOUS-APPRENTISSAGE (Les scores sont faibles sur les deux ensembles).")
-    elif ecart > seuil_overfitting:
-        print("➡️ Verdict : SURAPPRENTISSAGE (Écart important entre l'entraînement et la validation).")
-    else:
-        print("➡️ Verdict : MODÈLE BIEN ÉQUILIBRÉ (Scores élevés et écarts restreints).")
-
-
-# ----------------------------------------------------------------------
 # 15. Analyse du seuil optimal de décision
 # ----------------------------------------------------------------------
 def analyser_seuil_optimal(pipeline, X_test, y_test, nom_modele="Modèle"):
@@ -1037,59 +988,48 @@ def diagnostiquer_overfitting_tableau(df_res, col_train='ROC_AUC_train', col_cv=
 # ----------------------------------------------------------------------
 # 17. Interface interactive globale (7 onglets)
 # ----------------------------------------------------------------------
-def interface_etude_modeles_etape(fitted_pipelines, X_train, y_train, X_test, y_test, df_res=None):
-    """
-    Interface interactive sous forme de widgets jupyter (7 onglets) permettant
-    d'explorer toutes les fonctions d'analyse post-entraînement.
-    """
-    model_names = list(fitted_pipelines.keys())
-    
-    # Widgets de sélection
-    select_modele = widgets.Dropdown(options=model_names, description='Modèle :', style={'description_width': 'initial'})
-    select_dataset = widgets.Dropdown(options=[('Test', 'test'), ('Train', 'train')], value='test', description='Jeu de données :', style={'description_width': 'initial'})
-    slider_seuil = widgets.FloatSlider(value=0.5, min=0.1, max=0.9, step=0.05, description='Seuil :', style={'description_width': 'initial'})
-
-    out_tab1 = widgets.Output()
-    out_tab2 = widgets.Output()
-    out_tab3 = widgets.Output()
-    out_tab4 = widgets.Output()
-    out_tab5 = widgets.Output()
-    out_tab6 = widgets.Output()
-    out_tab7 = widgets.Output()
-
-    def get_data(dataset_choisi):
-        return (X_train, y_train) if dataset_choisi == 'train' else (X_test, y_test)
-
-    # Onglet 1 : Résidus / Erreurs
-    with out_tab1:
-        print("Sélectionnez les paramètres et relancez ou explorez ci-dessous.")
-
-    # Création du conteneur à onglets
-    tab = widgets.Tab(children=[out_tab1, out_tab2, out_tab3, out_tab4, out_tab5, out_tab6, out_tab7])
-    tab.set_title(0, 'Résidus & Erreurs')
-    tab.set_title(1, 'Proba par Type')
-    tab.set_title(2, 'Train vs Test')
-    tab.set_title(3, 'Importance (Permutation)')
-    tab.set_title(4, 'Courbes ROC / PR')
-    tab.set_title(5, 'Calibration & Seuil')
-    tab.set_title(6, 'Diagnostic Global')
-
-    display(widgets.VBox([
-        widgets.HBox([select_modele, select_dataset, slider_seuil]),
-        tab
-    ]))
-# ----------------------------------------------------------------------
-# Widget UI pour l'étape d'analyse approfondie des modèles (7 Onglets)
-# ----------------------------------------------------------------------
 def interface_etude_modeles_etape():
     """Crée l'interface complète avec 7 onglets et un choix Train/Test pour l'analyse approfondie."""
-    
+
+    import sys
+    main_ns = sys.modules['__main__'].__dict__
+
     try:
-        import sys
-        main_ns = sys.modules['__main__'].__dict__
         max_models = len(main_ns.get("df_res_widget", [1, 2, 3, 4, 5]))
     except Exception:
-        max_models = 5 
+        max_models = 5
+
+    def _modeles_entraines():
+        """Modèles réellement disponibles pour l'analyse (= déjà entraînés)."""
+        fitted = main_ns.get("fitted_pipelines_widget")
+        return list(fitted.keys()) if fitted else []
+
+    # Sélecteur de modèles à cocher, groupés par catégorie (indépendant du Top N :
+    # les modèles cochés ici s'ajoutent au Top N choisi ci-dessous). Seuls les
+    # modèles déjà entraînés (présents dans fitted_pipelines_widget) sont proposés,
+    # car un modèle non entraîné ne peut produire aucune analyse.
+    zone_selecteur = widgets.VBox()
+    _get_modeles_coches_ref = {"fn": (lambda: [])}
+
+    def _reconstruire_selecteur(b=None):
+        noms = _modeles_entraines()
+        if noms:
+            conteneur, getter = creer_selecteur_modeles_categorise(noms, valeurs_par_defaut=[])
+            zone_selecteur.children = [conteneur]
+        else:
+            getter = lambda: []
+            zone_selecteur.children = [widgets.HTML(
+                "<i>⚠️ Aucun modèle entraîné pour l'instant. Lancez d'abord l'entraînement "
+                "(étape précédente), puis cliquez sur 🔄 pour rafraîchir cette liste.</i>"
+            )]
+        _get_modeles_coches_ref["fn"] = getter
+
+    btn_refresh_modeles = widgets.Button(
+        description="🔄 Actualiser la liste des modèles entraînés",
+        layout=widgets.Layout(width='300px')
+    )
+    btn_refresh_modeles.on_click(_reconstruire_selecteur)
+    _reconstruire_selecteur()  # construction initiale, selon l'état actuel de l'entraînement
 
     metrique_dropdown = widgets.Dropdown(
         options=['Recall', 'F1', 'ROC_AUC', 'Precision', 'Accuracy', 'PR_AUC'],
@@ -1162,6 +1102,24 @@ def interface_etude_modeles_etape():
             
         top_models_df = current_df_res.sort_values(by=colonne_selection, ascending=False).head(current_top_n)
         top_model_names = top_models_df.index.tolist()
+
+        # Modèles cochés manuellement (catégorisés), filtrés sur les modèles réellement
+        # entraînés (double sécurité si la liste n'a pas été rafraîchie). Ils s'ajoutent
+        # au Top N, sans doublon, en conservant l'ordre (sélection manuelle en premier).
+        modeles_coches = [m for m in _get_modeles_coches_ref["fn"]() if m in current_fitted_pipelines]
+        noms_vus = set()
+        top_model_names_fusionnes = []
+        for m in modeles_coches + top_model_names:
+            if m not in noms_vus:
+                noms_vus.add(m)
+                top_model_names_fusionnes.append(m)
+        top_model_names = top_model_names_fusionnes
+
+        if not top_model_names:
+            with tab.children[0]:
+                clear_output()
+                print("❌ Aucun modèle à analyser : cochez au moins un modèle dans les catégories ci-dessus, ou augmentez le Top N.")
+            return
 
         # --- Onglet 0 : Probas & Erreurs ---
         with tab.children[0]:
@@ -1252,12 +1210,10 @@ def interface_etude_modeles_etape():
     btn_eval.on_click(on_eval_clicked)
 
     return widgets.VBox([
+        widgets.HBox([widgets.HTML("<b>Modèles à inclure manuellement (en plus du Top N ci-dessous) :</b>"),
+                      btn_refresh_modeles]),
+        zone_selecteur,
         widgets.HBox([metrique_dropdown, top_n_models_slider, dataset_dropdown]),
         btn_eval,
         tab
     ])
-
-
-
-
-

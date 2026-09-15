@@ -3,13 +3,13 @@ Module regroupant les fonctions de modélisation pour la prédiction de
 l'attrition (a_quitte_l_entreprise).
 
 MISES A JOUR :
-- Intégration du panneau interactif de sélection par catégorie de modèles (ON/OFF).
 - Ajout de la métrique PR_AUC_test (Precision-Recall AUC).
 - Sélecteur interactif d'objectif métier.
-- Paramétrage dynamique du nombre de folds, des répétitions et du seuil.
+- Paramétrage dynamique du nombre de folds et des répétitions pour la validation croisée.
 """
 
 import time
+from collections import OrderedDict
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -20,10 +20,7 @@ from sklearn.base import clone
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from sklearn.model_selection import (
-    cross_val_score, train_test_split, StratifiedKFold, 
-    RepeatedStratifiedKFold, KFold, cross_validate
-)
+from sklearn.model_selection import cross_val_score, train_test_split, StratifiedKFold, RepeatedStratifiedKFold, KFold, cross_validate
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
     roc_auc_score, average_precision_score, classification_report
@@ -138,17 +135,145 @@ def obtenir_modeles(random_state=42):
 
 
 # ----------------------------------------------------------------------
+# 3bis. Catégorisation des modèles (pour les sélecteurs à cocher par groupe)
+# ----------------------------------------------------------------------
+CATEGORIES_MODELES = OrderedDict([
+    ("Référence (Baseline)", ["Dummy_Stratified"]),
+    ("Linéaires & Régularisés", [
+        "LogisticRegression_None", "LogisticRegression_L1", "LogisticRegression_L2",
+        "Ridge", "ElasticNet_LogReg", "SVR_Linear",
+    ]),
+    ("Arbres & Boosting", [
+        "DecisionTree", "RandomForest", "GradientBoosting", "AdaBoost", "XGBoost",
+    ]),
+    ("Autres (SVM, KNN)", [
+        "SVC_Prob", "SVC_RBF", "SVC_Linear", "SVC_Poly", "KNN",
+    ]),
+])
+
+
+def obtenir_categories_modeles(noms_modeles=None):
+    """
+    Regroupe les modèles par catégorie (Baseline / Linéaires / Arbres & Boosting /
+    Autres) pour l'affichage dans les sélecteurs à cocher.
+
+    Si `noms_modeles` est fourni, seuls ces modèles sont conservés (utile pour
+    n'afficher que les modèles réellement entraînés). Un modèle non répertorié
+    dans CATEGORIES_MODELES (ex : nouveau modèle ajouté à obtenir_modeles()) est
+    placé dans une catégorie "Autres".
+
+    Retourne un OrderedDict {catégorie: [noms de modèles]}.
+    """
+    if noms_modeles is None:
+        noms_modeles = [m for modeles in CATEGORIES_MODELES.values() for m in modeles]
+
+    noms_set = set(noms_modeles)
+    resultat = OrderedDict()
+    deja_places = set()
+
+    for categorie, modeles in CATEGORIES_MODELES.items():
+        presents = [m for m in modeles if m in noms_set]
+        if presents:
+            resultat[categorie] = presents
+            deja_places.update(presents)
+
+    non_classes = [m for m in noms_modeles if m not in deja_places]
+    if non_classes:
+        resultat["Autres"] = non_classes
+
+    return resultat
+
+
+def creer_selecteur_modeles_categorise(noms_modeles, valeurs_par_defaut=None, categories=None):
+    """
+    Construit un sélecteur de modèles à cases à cocher, regroupées par catégorie
+    dans un accordéon repliable (chaque titre affiche le nombre de modèles),
+    avec des boutons "Tout cocher" / "Tout décocher" par catégorie et globaux.
+
+    Retourne (widget_conteneur, get_selection) où get_selection() est une
+    fonction renvoyant la liste des noms de modèles actuellement cochés.
+    """
+    if categories is None:
+        categories = obtenir_categories_modeles(noms_modeles)
+    valeurs_par_defaut = set(noms_modeles) if valeurs_par_defaut is None else set(valeurs_par_defaut)
+
+    checkboxes = OrderedDict()
+    panneaux = []
+    titres = []
+
+    def _handler_cocher(cases, valeur):
+        def handler(b):
+            for c in cases:
+                c.value = valeur
+        return handler
+
+    for categorie, modeles in categories.items():
+        cases_categorie = []
+        for nom in modeles:
+            cb = widgets.Checkbox(
+                value=(nom in valeurs_par_defaut),
+                description=nom,
+                indent=False,
+                layout=widgets.Layout(width='auto'),
+            )
+            checkboxes[nom] = cb
+            cases_categorie.append(cb)
+
+        btn_tout = widgets.Button(description="Tout cocher", button_style='info',
+                                   layout=widgets.Layout(width='110px'))
+        btn_rien = widgets.Button(description="Tout décocher",
+                                   layout=widgets.Layout(width='110px'))
+        btn_tout.on_click(_handler_cocher(cases_categorie, True))
+        btn_rien.on_click(_handler_cocher(cases_categorie, False))
+
+        panneaux.append(widgets.VBox([widgets.HBox([btn_tout, btn_rien])] + cases_categorie))
+        titres.append(f"{categorie} ({len(modeles)})")
+
+    accordion = widgets.Accordion(children=panneaux)
+    for i, titre in enumerate(titres):
+        accordion.set_title(i, titre)
+    if panneaux:
+        accordion.selected_index = 0
+
+    label_compteur = widgets.Label()
+
+    def _maj_compteur(change=None):
+        n = sum(cb.value for cb in checkboxes.values())
+        label_compteur.value = f"{n} / {len(checkboxes)} modèle(s) sélectionné(s)"
+
+    for cb in checkboxes.values():
+        cb.observe(_maj_compteur, names='value')
+    _maj_compteur()
+
+    btn_tout_global = widgets.Button(description="✅ Tout sélectionner", button_style='success',
+                                      layout=widgets.Layout(width='170px'))
+    btn_rien_global = widgets.Button(description="❌ Tout désélectionner", button_style='danger',
+                                      layout=widgets.Layout(width='170px'))
+    btn_tout_global.on_click(_handler_cocher(list(checkboxes.values()), True))
+    btn_rien_global.on_click(_handler_cocher(list(checkboxes.values()), False))
+
+    conteneur = widgets.VBox([
+        widgets.HBox([btn_tout_global, btn_rien_global, label_compteur]),
+        accordion,
+    ])
+
+    def get_selection():
+        return [nom for nom, cb in checkboxes.items() if cb.value]
+
+    return conteneur, get_selection
+
+
+# ----------------------------------------------------------------------
 # 4. Boucle d'évaluation avec scores par Fold, Moyenne, Écart-type & Anti-Fuite
 # ----------------------------------------------------------------------
-def evaluer_modeles(X_train, y_train, X_test, y_test, preprocessor, models=None, cv=None, n_splits=5, n_repeats=None, verbose=True):
+def evaluer_modeles(X_train, y_train, X_test, y_test, preprocessor, models=None, n_splits=5, n_repeats=None, random_state=42, verbose=True):
     if models is None:
-        models = obtenir_modeles()
+        models = obtenir_modeles(random_state=random_state)
      
-    if cv is None:
-        if n_repeats and n_repeats > 1:
-            cv = RepeatedStratifiedKFold(n_splits=n_splits, n_repeats=n_repeats, random_state=42)
-        else:
-            cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+    if n_repeats and n_repeats > 1:
+        cv = RepeatedStratifiedKFold(n_splits=n_splits, n_repeats=n_repeats, random_state=random_state)
+    else:
+        cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
 
     results = []
     fitted_pipelines = {}
@@ -414,6 +539,7 @@ def bouton_preprocesseur_etape(get_X_train_test_callback):
 # Fonctions d'analyse des erreurs et visualisations
 # ----------------------------------------------------------------------
 def afficher_analyse_erreurs_detaillees(pipeline, X_eval, y_eval, seuil=0.5):
+    """Extrait et affiche un tableau des individus mal prédits."""
     if hasattr(pipeline, "predict_proba"):
         probas = pipeline.predict_proba(X_eval)[:, 1]
     else:
@@ -442,6 +568,7 @@ def afficher_analyse_erreurs_detaillees(pipeline, X_eval, y_eval, seuil=0.5):
 
 
 def tracer_sigmoide_et_erreurs(pipeline, X_eval, y_eval, seuil=0.5):
+    """Trace la distribution avec les erreurs, les bons et le seuil."""
     plt.figure(figsize=(10, 5))
     
     if hasattr(pipeline, "named_steps") and hasattr(pipeline.named_steps.get('classifier', None), "decision_function"):
@@ -458,6 +585,7 @@ def tracer_sigmoide_et_erreurs(pipeline, X_eval, y_eval, seuil=0.5):
     
     plt.scatter(range(len(probas))[corrects], probas[corrects], color='green', alpha=0.6, label='Bonne prédiction')
     plt.scatter(range(len(probas))[~corrects], probas[~corrects], color='red', alpha=0.8, label='Erreur')
+    
     plt.axhline(y=seuil, color='orange', linestyle='--', linewidth=2, label=f'Seuil ({seuil})')
     
     plt.title("Courbe de décision, seuil et répartition des erreurs")
@@ -469,314 +597,88 @@ def tracer_sigmoide_et_erreurs(pipeline, X_eval, y_eval, seuil=0.5):
 
 
 # ----------------------------------------------------------------------
-# 6bis. Interface globale d'étude des modèles
-# ----------------------------------------------------------------------
-def interface_etude_modeles_etape():
-    import sys
-    main_ns = sys.modules['__main__'].__dict__
-    
-    all_models = list(main_ns.get("fitted_pipelines_widget", {}).keys())
-    if not all_models:
-        all_models = ["Dummy_Stratified", "LogisticRegression_L2", "RandomForest", "XGBoost"]
-
-    select_models = widgets.SelectMultiple(
-        options=all_models,
-        value=all_models[:min(2, len(all_models))], 
-        description='Modèles ciblés :',
-        style={'description_width': 'initial'},
-        layout=widgets.Layout(width='320px', height='80px')
-    )
-
-    metrique_dropdown = widgets.Dropdown(
-        options=['Recall', 'F1', 'ROC_AUC', 'Precision', 'Accuracy', 'PR_AUC'],
-        value='Recall',
-        description='Métrique Top N :',
-        style={'description_width': 'initial'},
-        layout=widgets.Layout(width='220px')
-    )
-
-    top_n_models_slider = widgets.IntSlider(
-        value=min(1, len(all_models)),
-        min=1,
-        max=max(1, len(all_models)),
-        step=1,
-        description='Top N :',
-        style={'description_width': 'initial'},
-        layout=widgets.Layout(width='200px')
-    )
-    
-    seuil_slider = widgets.FloatSlider(
-        value=main_ns.get("seuil_personnalise", 0.5),
-        min=0.05, max=0.95, step=0.05,
-        description='Seuil de décision :',
-        style={'description_width': 'initial'},
-        layout=widgets.Layout(width='260px'),
-        readout_format='.2f'
-    )
-
-    dataset_dropdown = widgets.Dropdown(
-        options=[('Jeu de Test', 'test'), ('Jeu d\'Entraînement (Train)', 'train')],
-        value='test',
-        description='Données :',
-        style={'description_width': 'initial'},
-        layout=widgets.Layout(width='220px')
-    )
-
-    btn_eval = widgets.Button(
-        description="🚀 Charger / Actualiser les analyses",
-        button_style='primary',
-        layout=widgets.Layout(width='320px', height='40px')
-    )
-
-    tab_contents = [widgets.Output() for _ in range(7)]
-    tab = widgets.Tab()
-    tab.children = tab_contents
-    tab.set_title(0, "1. Probas & Erreurs")
-    tab.set_title(1, "2. Résidus & CV")
-    tab.set_title(2, "3. Importances")
-    tab.set_title(3, "4. Confusion & Class.")
-    tab.set_title(4, "5. Grille True vs Pred")
-    tab.set_title(5, "6. Corrélations")
-    tab.set_title(6, "7. ROC / PR / Seuil")
-
-    def on_eval_clicked(b):
-        import sys
-        main_ns = sys.modules['__main__'].__dict__
-        
-        if "df_res_widget" not in main_ns or "fitted_pipelines_widget" not in main_ns:
-            with tab.children[0]:
-                clear_output()
-                print("❌ Erreur : Veuillez d'abord exécuter l'entraînement des modèles !")
-            return
-
-        current_df_res = main_ns["df_res_widget"]
-        current_fitted_pipelines = main_ns["fitted_pipelines_widget"]
-        
-        updated_models = list(current_fitted_pipelines.keys())
-        select_models.options = updated_models
-        if not select_models.value or any(m not in updated_models for m in select_models.value):
-            select_models.value = updated_models[:min(2, len(updated_models))]
-
-        X_train, y_train = main_ns["X_train"], main_ns["y_train"]
-        X_test, y_test = main_ns["X_test"], main_ns["y_test"]
-
-        selected_metric = metrique_dropdown.value.lower()
-        current_top_n = top_n_models_slider.value
-        use_train = (dataset_dropdown.value == 'train')
-        seuil_actuel = seuil_slider.value
-        
-        X_eval, y_eval = (X_train, y_train) if use_train else (X_test, y_test)
-        dataset_label = "Entraînement (Train)" if use_train else "Test"
-
-        models_manuel = list(select_models.value)
-        colonnes_possibles = [c for c in current_df_res.columns if selected_metric in c.lower()]
-        colonne_selection = colonnes_possibles[0] if colonnes_possibles else current_df_res.columns[0]
-        
-        top_models_df = current_df_res.sort_values(by=colonne_selection, ascending=False).head(current_top_n)
-        models_top_n = top_models_df.index.tolist()
-        
-        active_models = list(set(models_manuel + models_top_n))
-
-        with tab.children[0]:
-            clear_output()
-            print(f"--- 1. Distribution des probabilités & Erreurs [{dataset_label}] (Seuil actif : {seuil_actuel}) ---")
-            print(f"Modèles analysés : {active_models}")
-
-        with tab.children[1]:
-            clear_output()
-            print(f"--- 2. Diagnostic global Overfitting ---")
-            display(current_df_res.loc[active_models, ['ROC_AUC_cv', 'ROC_AUC_cv_std', 'ROC_AUC_test', 'Diagnostic']])
-
-        for i in range(2, 4):
-            with tab.children[i]:
-                clear_output()
-                print(f"Analyse prête pour les modèles : {active_models}")
-
-        with tab.children[4]:
-            clear_output()
-            print(f"--- 5. Grille True vs Pred & Analyse détaillée des erreurs [{dataset_label}] (Seuil : {seuil_actuel}) ---")
-            if active_models:
-                nom_modele = active_models[0]
-                pipeline_actif = current_fitted_pipelines.get(nom_modele)
-                if pipeline_actif:
-                    print(f"Modèle affiché : {nom_modele}")
-                    try:
-                        tracer_sigmoide_et_erreurs(pipeline_actif, X_eval, y_eval, seuil=seuil_actuel)
-                    except Exception as e:
-                        print(f"Erreur lors du tracé : {e}")
-                    print("\n📋 Tableau détaillé des individus mal prédits :")
-                    df_err = afficher_analyse_erreurs_detaillees(pipeline_actif, X_eval, y_eval, seuil=seuil_actuel)
-                    if df_err.empty:
-                        print("🎉 Aucune erreur sur ce jeu de données avec ce seuil !")
-                    else:
-                        display(df_err)
-
-        for i in range(5, 7):
-            with tab.children[i]:
-                clear_output()
-                print(f"Analyse prête pour les modèles : {active_models}")
-
-    btn_eval.on_click(on_eval_clicked)
-
-    return widgets.VBox([
-        widgets.HBox([select_models, widgets.VBox([metrique_dropdown, top_n_models_slider])]),
-        widgets.HBox([seuil_slider, dataset_dropdown, btn_eval]),
-        tab
-    ])
-
-
-# ----------------------------------------------------------------------
-# 7. Widget UI pour l'étape de modélisation globale (AVEC PANNEAU PAR CATÉGORIE)
+# 7. Widget UI pour l'étape de modélisation globale (AVEC FOLDS & RÉPÉTITIONS)
 # ----------------------------------------------------------------------
 def interface_modelisation_etape():
-    dict_modeles_base = obtenir_modeles()
+    """
+    Interface widget avec sélection des modèles à entraîner (cases à cocher
+    par catégorie), folds/répétitions et un curseur de seuil de décision.
+    """
+    tous_les_modeles = obtenir_modeles()
+    noms_modeles = list(tous_les_modeles.keys())
+    selecteur_modeles, get_modeles_selectionnes = creer_selecteur_modeles_categorise(noms_modeles)
 
-    dropdown_cv_methode = widgets.Dropdown(
-        options=[
-            ("Stratified K-Fold (recommandé)", "StratifiedKFold"),
-            ("Repeated Stratified K-Fold", "RepeatedStratifiedKFold"),
-            ("K-Fold standard", "KFold"),
-        ],
-        value="StratifiedKFold",
-        description="Méthode CV :",
-        style={"description_width": "initial"},
-        layout=widgets.Layout(width="380px"),
-    )
     slider_folds = widgets.IntSlider(
-        value=5, min=3, max=10, step=1,
+        value=5, min=2, max=10, step=1,
         description="Folds :",
         style={"description_width": "initial"},
-        layout=widgets.Layout(width="380px"),
+        layout=widgets.Layout(width="220px")
     )
     slider_repeats = widgets.IntSlider(
-        value=3, min=1, max=5, step=1,
+        value=1, min=1, max=10, step=1,
         description="Répétitions :",
         style={"description_width": "initial"},
-        layout=widgets.Layout(width="380px"),
+        layout=widgets.Layout(width="220px")
     )
     slider_seuil = widgets.FloatSlider(
-        value=0.5, min=0.05, max=0.95, step=0.05,
+        value=0.5, min=0.1, max=0.9, step=0.05,
         description="Seuil de décision :",
         style={"description_width": "initial"},
-        layout=widgets.Layout(width="380px"),
+        layout=widgets.Layout(width="280px"),
         readout_format='.2f'
     )
 
-    categories_modeles = {
-        "Référence (Baseline)": ["Dummy_Stratified"],
-        "Linéaires & régularisés": [
-            "LogisticRegression_None", "LogisticRegression_L1", "LogisticRegression_L2",
-            "Ridge", "ElasticNet_LogReg",
-        ],
-        "Arbres & boosting": [
-            "DecisionTree", "RandomForest", "GradientBoosting", "AdaBoost", "XGBoost",
-        ],
-        "Autres (SVM, KNN)": [
-            "SVC_Prob", "SVC_RBF", "SVC_Linear", "SVC_Poly", "SVR_Linear", "KNN",
-        ],
-    }
-
-    model_var_buttons, model_ui_blocks = {}, []
-    for cat_name, model_list in categories_modeles.items():
-        models_in_cat = [m for m in model_list if m in dict_modeles_base]
-        if not models_in_cat:
-            continue
-        grp_chk = widgets.Checkbox(
-            value=True,
-            description=f"Activer tout : {cat_name} ({len(models_in_cat)})",
-            style={"description_width": "initial"},
-        )
-        btn_list = []
-        model_var_buttons[cat_name] = []
-        for model_name in models_in_cat:
-            t_btn = widgets.ToggleButton(
-                value=True, description=f"ON : {model_name}", button_style="success",
-                layout=widgets.Layout(width="auto", margin="2px"),
-            )
-            def make_toggle_observer(btn, name):
-                def on_change(change):
-                    btn.description = f"{'ON' if change['new'] else 'OFF'} : {name}"
-                    btn.button_style = "success" if change["new"] else ""
-                return on_change
-            t_btn.observe(make_toggle_observer(t_btn, model_name), names="value")
-            model_var_buttons[cat_name].append((model_name, t_btn))
-            btn_list.append(t_btn)
-
-        def make_group_observer(btn_list_inner):
-            def on_change(change):
-                if change["name"] == "value":
-                    for btn in btn_list_inner:
-                        btn.value = change["new"]
-            return on_change
-        grp_chk.observe(make_group_observer(btn_list), names="value")
-
-        model_ui_blocks.append(widgets.VBox(
-            [grp_chk, widgets.HBox(btn_list, layout=widgets.Layout(flex_flow="wrap", margin="5px 0 10px 20px"))],
-            layout=widgets.Layout(border="solid 1px #ddd", padding="10px", margin="5px 0"),
-        ))
-
-    btn_models = widgets.Button(
-        description="Lancer la comparaison des modèles",
-        button_style="success",
-        layout=widgets.Layout(width="320px", height="45px"),
+    btn_lancer = widgets.Button(
+        description="🚀 Lancer l'entraînement",
+        button_style='success',
+        layout=widgets.Layout(width='350px', height='40px')
     )
-    out_models = widgets.Output()
+    out_widget = widgets.Output()
 
-    def on_models(b):
-        with out_models:
+    def on_click_lancer(b):
+        with out_widget:
             clear_output()
             import sys
             main_ns = sys.modules['__main__'].__dict__
-
-            if "preprocessor" not in main_ns or "X_train" not in main_ns:
-                print("Lance d'abord la cellule 1 puis la cellule 2.")
+            seed_actuelle = main_ns.get("random_state", 42)
+            if "X_train" not in main_ns or "preprocessor" not in main_ns:
+                print("❌ Erreur : X_train ou preprocessor introuvable. Exécutez d'abord les étapes précédentes !")
                 return
 
-            X_train = main_ns["X_train"]
-            y_train = main_ns["y_train"]
-            X_test = main_ns["X_test"]
-            y_test = main_ns["y_test"]
+            noms_selectionnes = get_modeles_selectionnes()
+            if not noms_selectionnes:
+                print("❌ Erreur : Sélectionnez au moins un modèle à entraîner (cases à cocher ci-dessus).")
+                return
+
+            modeles_a_entrainer = {nom: tous_les_modeles[nom] for nom in noms_selectionnes}
+
+            print(f"⏳ Entraînement en cours avec {slider_folds.value} folds et {slider_repeats.value} répétition(s) (Seuil={slider_seuil.value})...")
+            print(f"Modèles sélectionnés ({len(modeles_a_entrainer)}) : {', '.join(modeles_a_entrainer.keys())}")
+            X_train, y_train = main_ns["X_train"], main_ns["y_train"]
+            X_test, y_test = main_ns["X_test"], main_ns["y_test"]
             preprocessor = main_ns["preprocessor"]
-
-            models_a_tester = {
-                name: dict_modeles_base[name]
-                for cat_name, btn_list in model_var_buttons.items()
-                for name, btn in btn_list
-                if btn.value
-            }
-            if not models_a_tester:
-                print("Sélectionne au moins un modèle.")
-                return
-
-            methode = dropdown_cv_methode.value
-            n_splits = slider_folds.value
-            n_repeats = slider_repeats.value
-
-            if methode == "StratifiedKFold":
-                cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
-            elif methode == "RepeatedStratifiedKFold":
-                cv = RepeatedStratifiedKFold(n_splits=n_splits, n_repeats=n_repeats, random_state=42)
-            else:
-                cv = KFold(n_splits=n_splits, shuffle=True, random_state=42)
-
-            print(f"{methode} | {n_splits} folds | {len(models_a_tester)} modèle(s)\n")
-            df_res_widget, fitted_pipelines_widget = evaluer_modeles(
+            
+            df_res, fitted_pipelines = evaluer_modeles(
                 X_train, y_train, X_test, y_test, preprocessor,
-                models=models_a_tester, cv=cv, n_splits=n_splits, n_repeats=n_repeats, verbose=True
+                models=modeles_a_entrainer,
+                n_splits=slider_folds.value,
+                n_repeats=slider_repeats.value,
+		random_state=seed_actuelle
             )
-
+            
             main_ns["seuil_personnalise"] = slider_seuil.value
-            main_ns["models"] = models_a_tester
-            main_ns["cv"] = cv
-            main_ns["df_res_widget"] = df_res_widget
-            main_ns["fitted_pipelines_widget"] = fitted_pipelines_widget
+            main_ns["df_res_widget"] = df_res
+            main_ns["fitted_pipelines_widget"] = fitted_pipelines
+            
+            print("✅ Entraînement terminé avec succès !")
+            display(interface_choix_objectif(df_res))
 
-            print("\nModélisation terminée.\n")
-            display(interface_choix_objectif(df_res_widget))
-
-    btn_models.on_click(on_models)
-
+    btn_lancer.on_click(on_click_lancer)
+    
     return widgets.VBox([
-        dropdown_cv_methode, slider_folds, slider_repeats, slider_seuil,
-        *model_ui_blocks, btn_models, out_models
+        widgets.HTML("<b>Modèles à entraîner :</b>"),
+        selecteur_modeles,
+        widgets.HBox([slider_folds, slider_repeats, slider_seuil]),
+        btn_lancer,
+        out_widget
     ])
