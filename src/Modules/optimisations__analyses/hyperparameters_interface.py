@@ -26,16 +26,23 @@ import joblib
 import pandas as pd
 import numpy as np
 import ipywidgets as widgets
+import matplotlib.pyplot as plt
 
-from sklearn.model_selection import GridSearchCV
+from sklearn.model_selection import GridSearchCV, learning_curve
 from sklearn.pipeline import Pipeline
+from sklearn.inspection import permutation_importance
+from sklearn.calibration import calibration_curve
 
 from sklearn.metrics import (
     roc_auc_score,
     accuracy_score,
     precision_score,
     recall_score,
-    f1_score
+    f1_score,
+    confusion_matrix,
+    ConfusionMatrixDisplay,
+    roc_curve,
+    auc
 )
 
 from IPython.display import (
@@ -439,6 +446,179 @@ def _obtenir_scores_modele(model, X):
         predictions,
         dtype=float
     )
+
+
+# ============================================================
+# 2 bis. FONCTIONS DE DIAGNOSTIC (utilisées par l'analyse des
+#        modèles optimisés : permutation, confusion, proba vs
+#        réel, ROC, calibration, apprentissage, résidus)
+# ============================================================
+
+def _construire_table_permutation(
+    pipeline, X_test, y_test,
+    scoring="roc_auc", n_repeats=5, top_n=20
+):
+    """Importance par permutation, calculée sur les features BRUTES
+    de X_test (le pipeline se charge du preprocessing en interne)."""
+
+    resultat = permutation_importance(
+        pipeline, X_test, y_test,
+        n_repeats=n_repeats,
+        random_state=42,
+        scoring=scoring,
+        n_jobs=-1
+    )
+
+    df_perm = pd.DataFrame({
+        "Feature": X_test.columns,
+        "Importance_moyenne": resultat.importances_mean,
+        "Ecart_type": resultat.importances_std
+    })
+
+    return (
+        df_perm
+        .sort_values("Importance_moyenne", ascending=False)
+        .head(top_n)
+        .reset_index(drop=True)
+    )
+
+
+def _construire_figure_confusion(y_true, y_pred, titre):
+    fig, ax = plt.subplots(figsize=(5, 4.5))
+    cm = confusion_matrix(y_true, y_pred)
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=["0", "1"])
+    disp.plot(ax=ax, cmap="Blues", colorbar=False)
+    ax.set_title(titre)
+    plt.tight_layout()
+    return fig
+
+
+def _construire_figure_proba_vs_reel(y_true, y_proba, threshold, titre):
+    y_true = np.asarray(y_true).astype(int)
+    y_proba = np.asarray(y_proba, dtype=float)
+    y_pred = (y_proba >= threshold).astype(int)
+    correct = (y_pred == y_true)
+
+    rng = np.random.default_rng(42)
+    x_jitter = y_true + (rng.random(len(y_true)) - 0.5) * 0.3
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+
+    ax.axhspan(threshold, 1.05, color="orange", alpha=0.08)
+    ax.axhspan(-0.05, threshold, color="steelblue", alpha=0.08)
+
+    ax.scatter(
+        x_jitter[correct], y_proba[correct],
+        color="#2ca02c", s=25, alpha=0.75, label="Bonne prédiction"
+    )
+    ax.scatter(
+        x_jitter[~correct], y_proba[~correct],
+        color="#d62728", s=25, alpha=0.75, label="Erreur"
+    )
+
+    ax.axhline(
+        threshold, color="red", linestyle="--", linewidth=1.5,
+        label=f"Seuil {threshold:.2f}"
+    )
+
+    ax.set_ylim(-0.02, 1.02)
+    ax.set_xticks(sorted(set(y_true.tolist())))
+    ax.set_xlabel("Vraie classe")
+    ax.set_ylabel("Probabilité prédite")
+    ax.set_title(titre)
+    ax.legend(loc="best", fontsize=8)
+    plt.tight_layout()
+    return fig
+
+
+def _construire_figure_roc(y_true, y_proba, titre):
+    fpr, tpr, _ = roc_curve(y_true, y_proba)
+    auc_score = auc(fpr, tpr)
+
+    fig, ax = plt.subplots(figsize=(5, 5))
+    ax.plot(fpr, tpr, color="#1f77b4", linewidth=2, label=f"AUC = {auc_score:.3f}")
+    ax.plot([0, 1], [0, 1], linestyle="--", color="gray", label="Hasard")
+    ax.set_xlabel("Taux de faux positifs")
+    ax.set_ylabel("Taux de vrais positifs")
+    ax.set_title(titre)
+    ax.legend(loc="lower right")
+    plt.tight_layout()
+    return fig
+
+
+def _construire_figure_calibration(y_true, y_proba, titre, n_bins=10):
+    frac_pos, moy_proba = calibration_curve(
+        y_true, y_proba, n_bins=n_bins, strategy="quantile"
+    )
+
+    fig, ax = plt.subplots(figsize=(5, 5))
+    ax.plot(moy_proba, frac_pos, marker="o", color="#1f77b4", label="Modèle")
+    ax.plot([0, 1], [0, 1], linestyle="--", color="gray", label="Calibration parfaite")
+    ax.set_xlabel("Probabilité moyenne prédite")
+    ax.set_ylabel("Fraction de positifs observés")
+    ax.set_title(titre)
+    ax.legend(loc="best")
+    plt.tight_layout()
+    return fig
+
+
+def _construire_figure_learning_curve(pipeline, X_train, y_train, titre, cv=3):
+    train_sizes, train_scores, test_scores = learning_curve(
+        pipeline, X_train, y_train,
+        cv=cv,
+        scoring="roc_auc",
+        train_sizes=np.linspace(0.3, 1.0, 5),
+        n_jobs=-1
+    )
+
+    train_mean, train_std = train_scores.mean(axis=1), train_scores.std(axis=1)
+    test_mean, test_std = test_scores.mean(axis=1), test_scores.std(axis=1)
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+
+    ax.plot(train_sizes, train_mean, "o-", color="#1f77b4", label="Entraînement")
+    ax.fill_between(
+        train_sizes, train_mean - train_std, train_mean + train_std,
+        alpha=0.15, color="#1f77b4"
+    )
+
+    ax.plot(train_sizes, test_mean, "o-", color="#ff7f0e", label="Validation (CV)")
+    ax.fill_between(
+        train_sizes, test_mean - test_std, test_mean + test_std,
+        alpha=0.15, color="#ff7f0e"
+    )
+
+    ax.set_xlabel("Taille de l'échantillon d'entraînement")
+    ax.set_ylabel("ROC AUC")
+    ax.set_title(titre)
+    ax.legend(loc="best")
+    plt.tight_layout()
+    return fig
+
+
+def _construire_table_residus(X_test, y_test, y_proba, top_n=15):
+    """Reproduit une table de corrélation Résidus / |Résidus| vs
+    variables (dans l'esprit d'une analyse d'erreurs de régression,
+    appliquée ici à l'écart entre la probabilité prédite et la
+    vraie classe)."""
+
+    y_test_arr = np.asarray(y_test, dtype=float)
+    y_proba_arr = np.asarray(y_proba, dtype=float)
+    residus = y_test_arr - y_proba_arr
+
+    df_diag = X_test.copy()
+    df_diag["Vraie_Classe"] = y_test_arr
+    df_diag["Predicted_Proba"] = y_proba_arr
+    df_diag["Residuals"] = residus
+    df_diag["Abs_Residuals"] = np.abs(residus)
+
+    df_numerique = df_diag.select_dtypes(include=[np.number])
+
+    correlations = df_numerique.corr()[["Residuals", "Abs_Residuals"]]
+    correlations = correlations.drop(index=["Residuals"], errors="ignore")
+    correlations = correlations.sort_values("Abs_Residuals", ascending=False)
+
+    return correlations.head(top_n)
 
 
 # ============================================================
@@ -2819,9 +2999,43 @@ def interface_tuning(
 
                 return
 
-            print(
-                "🔎 Analyse des features"
+            X_train_diag = namespace.get("X_train")
+            y_train_diag = namespace.get("y_train")
+            X_test_diag = namespace.get("X_test")
+            y_test_diag = namespace.get("y_test")
+            cv_diag = namespace.get("cv", 3)
+
+            donnees_test_ok = (
+                X_test_diag is not None
+                and y_test_diag is not None
             )
+
+            donnees_train_ok = (
+                X_train_diag is not None
+                and y_train_diag is not None
+            )
+
+            seuil_actuel = threshold.value
+
+            print(
+                "🔎 Analyse des features et diagnostics"
+            )
+
+            print(
+                f"   (seuil utilisé pour les graphiques : {seuil_actuel:.2f})"
+            )
+
+            if not donnees_test_ok:
+                print(
+                    "⚠️ X_test/y_test introuvables : les onglets "
+                    "nécessitant les données de test seront vides."
+                )
+
+            if not donnees_train_ok:
+                print(
+                    "⚠️ X_train/y_train introuvables : l'onglet "
+                    "« Apprentissage » sera vide."
+                )
 
             print()
 
@@ -2859,132 +3073,296 @@ def interface_tuning(
                     )
                 )
 
-                # --------------------------------------------
-                # COEFFICIENTS
-                # --------------------------------------------
-
-                if hasattr(
-                    classifier,
-                    "coef_"
-                ):
-
-                    importance = (
-                        np.abs(
-                            classifier.coef_
+                # Score une seule fois pour les onglets qui en ont besoin
+                y_proba_test = None
+                if donnees_test_ok:
+                    try:
+                        y_proba_test = _obtenir_scores_modele(
+                            pipeline, X_test_diag
                         )
-                    )
-
-                    if importance.ndim > 1:
-
-                        importance = (
-                            importance[0]
+                    except Exception as e:
+                        print(
+                            f"⚠️ Impossible de calculer les scores "
+                            f"de test pour {nom_modele} : {e}"
                         )
 
-                # --------------------------------------------
-                # IMPORTANCE FEATURES
-                # --------------------------------------------
-
-                elif hasattr(
-                    classifier,
-                    "feature_importances_"
-                ):
-
-                    importance = (
-                        classifier
-                        .feature_importances_
-                    )
-
-                else:
-
-                    print(
-                        "ℹ️ Ce modèle ne possède "
-                        "ni coef_ ni "
-                        "feature_importances_."
-                    )
-
-                    continue
+                onglets = []
+                titres_onglets = []
 
                 # --------------------------------------------
-                # NOMS DES FEATURES
+                # 1) IMPORTANCE NATIVE (coef_ / feature_importances_)
                 # --------------------------------------------
 
-                try:
+                out_native = widgets.Output()
 
-                    noms_features = (
-                        preproc
-                        .get_feature_names_out()
-                    )
+                with out_native:
 
-                except Exception:
+                    importance = None
 
-                    noms_features = [
+                    if hasattr(classifier, "coef_"):
+                        importance = np.abs(classifier.coef_)
+                        if importance.ndim > 1:
+                            importance = importance[0]
 
-                        f"Feature_{i}"
+                    elif hasattr(classifier, "feature_importances_"):
+                        importance = classifier.feature_importances_
 
-                        for i in range(
-                            len(importance)
+                    if importance is None:
+
+                        print(
+                            "ℹ️ Ce modèle ne possède "
+                            "ni coef_ ni "
+                            "feature_importances_."
                         )
-                    ]
+
+                    else:
+
+                        try:
+                            noms_features = preproc.get_feature_names_out()
+                        except Exception:
+                            noms_features = [
+                                f"Feature_{i}"
+                                for i in range(len(importance))
+                            ]
+
+                        longueur = min(
+                            len(noms_features), len(importance)
+                        )
+
+                        df_features = pd.DataFrame({
+                            "Feature": noms_features[:longueur],
+                            "Importance": importance[:longueur]
+                        }).sort_values(
+                            "Importance", ascending=False
+                        ).head(20)
+
+                        display(
+                            df_features.style
+                            .background_gradient(
+                                subset=["Importance"], cmap="Greens"
+                            )
+                            .format({"Importance": "{:.5f}"})
+                        )
+
+                onglets.append(out_native)
+                titres_onglets.append("🧮 Importance (native)")
 
                 # --------------------------------------------
-                # ALIGNEMENT
+                # 2) IMPORTANCE PAR PERMUTATION
                 # --------------------------------------------
 
-                longueur = min(
+                out_perm = widgets.Output()
 
-                    len(
-                        noms_features
-                    ),
+                with out_perm:
 
-                    len(
-                        importance
-                    )
+                    if not donnees_test_ok:
+                        print("⚠️ X_test/y_test indisponibles.")
+                    else:
+                        try:
+                            df_perm = _construire_table_permutation(
+                                pipeline, X_test_diag, y_test_diag
+                            )
+                            display(
+                                df_perm.style
+                                .background_gradient(
+                                    subset=["Importance_moyenne"],
+                                    cmap="Purples"
+                                )
+                                .format({
+                                    "Importance_moyenne": "{:.5f}",
+                                    "Ecart_type": "{:.5f}"
+                                })
+                            )
+                        except Exception as e:
+                            print(
+                                "⚠️ Impossible de calculer "
+                                f"l'importance par permutation : {e}"
+                            )
+
+                onglets.append(out_perm)
+                titres_onglets.append("🔀 Permutation")
+
+                # --------------------------------------------
+                # 3) MATRICE DE CONFUSION
+                # --------------------------------------------
+
+                out_confusion = widgets.Output()
+
+                with out_confusion:
+
+                    if not donnees_test_ok or y_proba_test is None:
+                        print("⚠️ X_test/y_test indisponibles.")
+                    else:
+                        try:
+                            y_pred_test = (
+                                y_proba_test >= seuil_actuel
+                            ).astype(int)
+
+                            fig = _construire_figure_confusion(
+                                y_test_diag, y_pred_test,
+                                f"Matrice de confusion — {nom_modele}"
+                            )
+                            plt.show()
+                            plt.close(fig)
+                        except Exception as e:
+                            print(
+                                "⚠️ Impossible de tracer la "
+                                f"matrice de confusion : {e}"
+                            )
+
+                onglets.append(out_confusion)
+                titres_onglets.append("🧩 Confusion")
+
+                # --------------------------------------------
+                # 4) PROBA VS REEL
+                # --------------------------------------------
+
+                out_proba = widgets.Output()
+
+                with out_proba:
+
+                    if not donnees_test_ok or y_proba_test is None:
+                        print("⚠️ X_test/y_test indisponibles.")
+                    else:
+                        try:
+                            fig = _construire_figure_proba_vs_reel(
+                                y_test_diag, y_proba_test, seuil_actuel,
+                                f"Proba vs réel — {nom_modele}"
+                            )
+                            plt.show()
+                            plt.close(fig)
+                        except Exception as e:
+                            print(
+                                "⚠️ Impossible de tracer "
+                                f"Proba vs réel : {e}"
+                            )
+
+                onglets.append(out_proba)
+                titres_onglets.append("🎯 Proba vs réel")
+
+                # --------------------------------------------
+                # 5) COURBE ROC
+                # --------------------------------------------
+
+                out_roc = widgets.Output()
+
+                with out_roc:
+
+                    if not donnees_test_ok or y_proba_test is None:
+                        print("⚠️ X_test/y_test indisponibles.")
+                    else:
+                        try:
+                            fig = _construire_figure_roc(
+                                y_test_diag, y_proba_test,
+                                f"Courbe ROC — {nom_modele}"
+                            )
+                            plt.show()
+                            plt.close(fig)
+                        except Exception as e:
+                            print(
+                                f"⚠️ Impossible de tracer la courbe ROC : {e}"
+                            )
+
+                onglets.append(out_roc)
+                titres_onglets.append("📈 ROC")
+
+                # --------------------------------------------
+                # 6) CALIBRATION
+                # --------------------------------------------
+
+                out_calib = widgets.Output()
+
+                with out_calib:
+
+                    if not donnees_test_ok or y_proba_test is None:
+                        print("⚠️ X_test/y_test indisponibles.")
+                    else:
+                        try:
+                            fig = _construire_figure_calibration(
+                                y_test_diag, y_proba_test,
+                                f"Calibration — {nom_modele}"
+                            )
+                            plt.show()
+                            plt.close(fig)
+                        except Exception as e:
+                            print(
+                                "⚠️ Impossible de tracer la courbe "
+                                f"de calibration : {e}"
+                            )
+
+                onglets.append(out_calib)
+                titres_onglets.append("🎚️ Calibration")
+
+                # --------------------------------------------
+                # 7) COURBE D'APPRENTISSAGE
+                # --------------------------------------------
+
+                out_learn = widgets.Output()
+
+                with out_learn:
+
+                    if not donnees_train_ok:
+                        print("⚠️ X_train/y_train indisponibles.")
+                    else:
+                        try:
+                            fig = _construire_figure_learning_curve(
+                                pipeline, X_train_diag, y_train_diag,
+                                f"Courbe d'apprentissage — {nom_modele}",
+                                cv=cv_diag
+                            )
+                            plt.show()
+                            plt.close(fig)
+                        except Exception as e:
+                            print(
+                                "⚠️ Impossible de tracer la courbe "
+                                f"d'apprentissage : {e}"
+                            )
+
+                onglets.append(out_learn)
+                titres_onglets.append("📚 Apprentissage")
+
+                # --------------------------------------------
+                # 8) RESIDUS
+                # --------------------------------------------
+
+                out_residus = widgets.Output()
+
+                with out_residus:
+
+                    if not donnees_test_ok or y_proba_test is None:
+                        print("⚠️ X_test/y_test indisponibles.")
+                    else:
+                        try:
+                            df_res_corr = _construire_table_residus(
+                                X_test_diag, y_test_diag, y_proba_test
+                            )
+                            display(
+                                df_res_corr.style
+                                .background_gradient(
+                                    cmap="coolwarm", vmin=-1, vmax=1
+                                )
+                                .format("{:.3f}")
+                            )
+                        except Exception as e:
+                            print(
+                                f"⚠️ Impossible de calculer les résidus : {e}"
+                            )
+
+                onglets.append(out_residus)
+                titres_onglets.append("📉 Résidus")
+
+                # --------------------------------------------
+                # ASSEMBLAGE EN ONGLETS
+                # --------------------------------------------
+
+                tab_diagnostic = widgets.Tab(
+                    children=onglets
                 )
 
-                df_features = pd.DataFrame({
+                for i, titre in enumerate(titres_onglets):
+                    tab_diagnostic.set_title(i, titre)
 
-                    "Feature":
-                        noms_features[
-                            :longueur
-                        ],
-
-                    "Importance":
-                        importance[
-                            :longueur
-                        ]
-                })
-
-                df_features = (
-
-                    df_features
-
-                    .sort_values(
-                        "Importance",
-                        ascending=False
-                    )
-
-                    .head(20)
-                )
-
-                display(
-
-                    df_features
-                    .style
-
-                    .background_gradient(
-                        subset=[
-                            "Importance"
-                        ],
-                        cmap="Greens"
-                    )
-
-                    .format(
-                        {
-                            "Importance":
-                                "{:.5f}"
-                        }
-                    )
-                )
+                display(tab_diagnostic)
 
     bouton_features.on_click(
         analyser_features
