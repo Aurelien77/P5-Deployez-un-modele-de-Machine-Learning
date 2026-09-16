@@ -1526,7 +1526,10 @@ def interface_tuning(
 
     threshold = widgets.FloatSlider(
 
-        value=0.35,
+        value=namespace.get(
+            "seuil_personnalise",
+            0.5
+        ),
 
         min=0.1,
 
@@ -1543,6 +1546,28 @@ def interface_tuning(
         layout=widgets.Layout(
             width="350px"
         )
+    )
+
+    bouton_sync_seuil = widgets.Button(
+
+        description=(
+            "🔄 Récupérer le seuil du modèle de base"
+        ),
+
+        layout=widgets.Layout(
+            width="300px"
+        )
+    )
+
+    def _sync_seuil(b=None):
+
+        threshold.value = namespace.get(
+            "seuil_personnalise",
+            0.5
+        )
+
+    bouton_sync_seuil.on_click(
+        _sync_seuil
     )
 
     # ========================================================
@@ -3155,7 +3180,10 @@ def interface_tuning(
             "<i>Utilisés uniquement par le bouton "
             "« ⚙️ Optimisation manuelle ». Ignorés par "
             "« 🚀 Optimisation automatique » (qui teste "
-            "une grille de valeurs).</i>"
+            "une grille de valeurs). Le seuil de décision "
+            "se règle plus haut, dans le bloc "
+            "« 🎚️ Seuil de décision », car il s'applique "
+            "aux deux modes.</i>"
         ),
 
         widgets.HBox([
@@ -3169,8 +3197,7 @@ def interface_tuning(
         ]),
 
         widgets.HBox([
-            learning_rate,
-            threshold
+            learning_rate
         ])
     ])
 
@@ -3206,6 +3233,27 @@ def interface_tuning(
         ]),
 
         zone_selection_modeles
+    ])
+
+    bloc_seuil = widgets.VBox([
+
+        widgets.HTML(
+            "<h4>🎚️ Seuil de décision</h4>"
+        ),
+
+        widgets.HTML(
+            "<i>Repris automatiquement du seuil défini à "
+            "l'étape d'entraînement de base "
+            "(<code>seuil_personnalise</code>), mais ajustable "
+            "ici si besoin. S'applique aux métriques "
+            "(Accuracy/Precision/Recall/F1) des optimisations "
+            "automatique <b>et</b> manuelle.</i>"
+        ),
+
+        widgets.HBox([
+            threshold,
+            bouton_sync_seuil
+        ])
     ])
 
     bloc_commandes = widgets.VBox([
@@ -3299,6 +3347,12 @@ def interface_tuning(
     interface = widgets.VBox([
 
         bloc_selection_modeles,
+
+        widgets.HTML(
+            "<hr>"
+        ),
+
+        bloc_seuil,
 
         widgets.HTML(
             "<hr>"

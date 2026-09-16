@@ -266,7 +266,7 @@ def creer_selecteur_modeles_categorise(noms_modeles, valeurs_par_defaut=None, ca
 # ----------------------------------------------------------------------
 # 4. Boucle d'évaluation avec scores par Fold, Moyenne, Écart-type & Anti-Fuite
 # ----------------------------------------------------------------------
-def evaluer_modeles(X_train, y_train, X_test, y_test, preprocessor, models=None, n_splits=5, n_repeats=None, random_state=42, verbose=True):
+def evaluer_modeles(X_train, y_train, X_test, y_test, preprocessor, models=None, n_splits=5, n_repeats=None, random_state=42, verbose=True, seuil=0.5):
     if models is None:
         models = obtenir_modeles(random_state=random_state)
      
@@ -303,6 +303,10 @@ def evaluer_modeles(X_train, y_train, X_test, y_test, preprocessor, models=None,
         fitted_pipelines[name] = pipeline
         duration = time.time() - start_time
 
+        a_une_proba = hasattr(pipeline, "predict_proba") or hasattr(
+            pipeline.named_steps['classifier'], "decision_function"
+        )
+
         if hasattr(pipeline, "predict_proba"):
             y_train_proba = pipeline.predict_proba(X_train)[:, 1]
         elif hasattr(pipeline.named_steps['classifier'], "decision_function"):
@@ -310,8 +314,6 @@ def evaluer_modeles(X_train, y_train, X_test, y_test, preprocessor, models=None,
             y_train_proba = 1 / (1 + np.exp(-decisions_train))
         else:
             y_train_proba = [0] * len(y_train)
-
-        y_train_pred = pipeline.predict(X_train)
 
         if hasattr(pipeline, "predict_proba"):
             y_test_proba = pipeline.predict_proba(X_test)[:, 1]
@@ -321,7 +323,15 @@ def evaluer_modeles(X_train, y_train, X_test, y_test, preprocessor, models=None,
         else:
             y_test_proba = [0] * len(y_test)
 
-        y_test_pred = pipeline.predict(X_test)
+        # Le seuil ne peut s'appliquer que si l'on dispose d'une proba/score
+        # continu (predict_proba ou decision_function). Sans ça, on retombe
+        # sur le .predict() natif du modèle (seuil interne non modifiable).
+        if a_une_proba:
+            y_train_pred = (np.array(y_train_proba) >= seuil).astype(int)
+            y_test_pred = (np.array(y_test_proba) >= seuil).astype(int)
+        else:
+            y_train_pred = pipeline.predict(X_train)
+            y_test_pred = pipeline.predict(X_test)
 
         results.append({
             "Model": name,
@@ -343,6 +353,7 @@ def evaluer_modeles(X_train, y_train, X_test, y_test, preprocessor, models=None,
             "Recall_test": recall_score(y_test, y_test_pred, zero_division=0),
             "F1_test": f1_score(y_test, y_test_pred, zero_division=0),
             "Duration_s": duration,
+            "Seuil_utilise": seuil if a_une_proba else 0.5,
         })
 
     df_res = pd.DataFrame(results).set_index("Model")
@@ -663,7 +674,8 @@ def interface_modelisation_etape():
                 models=modeles_a_entrainer,
                 n_splits=slider_folds.value,
                 n_repeats=slider_repeats.value,
-		random_state=seed_actuelle
+		random_state=seed_actuelle,
+                seuil=slider_seuil.value
             )
             
             main_ns["seuil_personnalise"] = slider_seuil.value
