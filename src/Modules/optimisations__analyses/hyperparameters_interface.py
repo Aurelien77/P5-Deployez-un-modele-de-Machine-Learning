@@ -20,6 +20,7 @@ import sys
 import traceback
 import time
 from pathlib import Path
+from collections import OrderedDict
 
 import joblib
 import pandas as pd
@@ -1547,140 +1548,73 @@ def interface_tuning(
     # ========================================================
     # SELECTION DES MODELES
     # ========================================================
+    #
+    # Seuls les modeles deja entraines (presents dans
+    # fitted_pipelines_widget, cf. etape de modelisation) sont
+    # proposes ici : un modele non entraine n'a pas de resultats
+    # de validation croisee sur lesquels s'appuyer, et lancer une
+    # optimisation d'hyperparametres pour lui n'aurait donc aucun
+    # sens. Un bouton "Actualiser" permet de rafraichir la liste
+    # si l'entrainement est relance/modifie apres l'ouverture de
+    # cette interface (meme logique que l'etape d'etude des
+    # modeles).
 
     boutons_modeles = {}
 
-    accordions_categories = []
-
     sortie = widgets.Output()
 
-    for categorie, modeles in (
-        categories_modeles.items()
-    ):
+    zone_selection_modeles = widgets.VBox()
 
-        boutons = []
+    def _modeles_entraines():
+        """Noms des modeles reellement entraines (= disponibles ici)."""
 
-        for nom_modele in modeles:
-
-            bouton = widgets.ToggleButton(
-
-                value=False,
-
-                description=(
-                    f"OFF : {nom_modele}"
-                ),
-
-                button_style="",
-
-                layout=widgets.Layout(
-                    width="260px"
-                )
-            )
-
-            boutons_modeles[
-                nom_modele
-            ] = bouton
-
-            def changement(
-                change,
-                bouton=bouton,
-                nom_modele=nom_modele
-            ):
-
-                if change["name"] != "value":
-                    return
-
-                if change["new"]:
-
-                    bouton.description = (
-                        f"ON : {nom_modele}"
-                    )
-
-                    bouton.button_style = (
-                        "success"
-                    )
-
-                else:
-
-                    bouton.description = (
-                        f"OFF : {nom_modele}"
-                    )
-
-                    bouton.button_style = ""
-
-            bouton.observe(
-                changement,
-                names="value"
-            )
-
-            boutons.append(
-                bouton
-            )
-
-        # ----------------------------------------------------
-        # BOUTON "TOUT SELECTIONNER" PROPRE A LA CATEGORIE
-        # ----------------------------------------------------
-        # Evite d'avoir a cliquer sur chaque modele un par un
-        # quand on veut activer/desactiver une categorie entiere.
-
-        bouton_cat_tous = widgets.ToggleButton(
-
-            value=False,
-
-            description="☑️ Tout activer",
-
-            button_style="info",
-
-            layout=widgets.Layout(
-                width="260px"
-            )
+        fitted = namespace.get(
+            "fitted_pipelines_widget"
         )
 
-        def changement_categorie(
-            change,
-            boutons=boutons,
-            bouton_cat_tous=bouton_cat_tous
+        return (
+            list(fitted.keys())
+            if fitted else []
+        )
+
+    def _filtrer_categories_par_modeles(
+        categories,
+        noms_disponibles
+    ):
+        """Ne conserve, dans chaque categorie, que les modeles
+        entraines. Les categories sans modele disponible sont
+        retirees ; les modeles entraines absents de `categories`
+        sont regroupes dans une categorie "Autres"."""
+
+        noms_set = set(
+            noms_disponibles
+        )
+
+        resultat = OrderedDict()
+        deja_places = set()
+
+        for categorie, modeles in (
+            categories.items()
         ):
 
-            if change["name"] != "value":
-                return
-
-            for bouton in boutons:
-                bouton.value = change["new"]
-
-            bouton_cat_tous.description = (
-                "☑️ Tout desactiver"
-                if change["new"]
-                else "☑️ Tout activer"
-            )
-
-        bouton_cat_tous.observe(
-            changement_categorie,
-            names="value"
-        )
-
-        bloc_categorie = widgets.VBox(
-            [bouton_cat_tous] + boutons
-        )
-
-        accordion = widgets.Accordion(
-            children=[
-                bloc_categorie
+            presents = [
+                m for m in modeles
+                if m in noms_set
             ]
-        )
 
-        accordion.set_title(
-            0,
-            f"{categorie} ({len(modeles)})"
-        )
+            if presents:
+                resultat[categorie] = presents
+                deja_places.update(presents)
 
-        accordions_categories.append(
-            accordion
-        )
+        non_classes = [
+            m for m in noms_disponibles
+            if m not in deja_places
+        ]
 
-    # ========================================================
-    # SELECTION GLOBALE DES MODELES
-    # ========================================================
+        if non_classes:
+            resultat["Autres"] = non_classes
+
+        return resultat
 
     tout_selectionner_modeles = (
         widgets.ToggleButton(
@@ -1730,6 +1664,185 @@ def interface_tuning(
         selection_globale_modeles,
         names="value"
     )
+
+    def _construire_selection_modeles(b=None):
+        """(Re)construit les cases a cocher a partir des modeles
+        actuellement entraines (fitted_pipelines_widget)."""
+
+        boutons_modeles.clear()
+
+        noms_disponibles = _modeles_entraines()
+
+        if not noms_disponibles:
+
+            zone_selection_modeles.children = [
+                widgets.HTML(
+                    "<i>⚠️ Aucun modèle entraîné pour l'instant. "
+                    "Lancez d'abord l'entraînement (étape "
+                    "précédente), puis cliquez sur 🔄 pour "
+                    "rafraîchir cette liste.</i>"
+                )
+            ]
+
+            tout_selectionner_modeles.disabled = True
+
+            return
+
+        tout_selectionner_modeles.disabled = False
+
+        categories_disponibles = (
+            _filtrer_categories_par_modeles(
+                categories_modeles,
+                noms_disponibles
+            )
+        )
+
+        accordions_categories_locales = []
+
+        for categorie, modeles in (
+            categories_disponibles.items()
+        ):
+
+            boutons = []
+
+            for nom_modele in modeles:
+
+                bouton = widgets.ToggleButton(
+
+                    value=False,
+
+                    description=(
+                        f"OFF : {nom_modele}"
+                    ),
+
+                    button_style="",
+
+                    layout=widgets.Layout(
+                        width="260px"
+                    )
+                )
+
+                boutons_modeles[
+                    nom_modele
+                ] = bouton
+
+                def changement(
+                    change,
+                    bouton=bouton,
+                    nom_modele=nom_modele
+                ):
+
+                    if change["name"] != "value":
+                        return
+
+                    if change["new"]:
+
+                        bouton.description = (
+                            f"ON : {nom_modele}"
+                        )
+
+                        bouton.button_style = (
+                            "success"
+                        )
+
+                    else:
+
+                        bouton.description = (
+                            f"OFF : {nom_modele}"
+                        )
+
+                        bouton.button_style = ""
+
+                bouton.observe(
+                    changement,
+                    names="value"
+                )
+
+                boutons.append(
+                    bouton
+                )
+
+            # ----------------------------------------------------
+            # BOUTON "TOUT SELECTIONNER" PROPRE A LA CATEGORIE
+            # ----------------------------------------------------
+            # Evite d'avoir a cliquer sur chaque modele un par un
+            # quand on veut activer/desactiver une categorie entiere.
+
+            bouton_cat_tous = widgets.ToggleButton(
+
+                value=False,
+
+                description="☑️ Tout activer",
+
+                button_style="info",
+
+                layout=widgets.Layout(
+                    width="260px"
+                )
+            )
+
+            def changement_categorie(
+                change,
+                boutons=boutons,
+                bouton_cat_tous=bouton_cat_tous
+            ):
+
+                if change["name"] != "value":
+                    return
+
+                for bouton in boutons:
+                    bouton.value = change["new"]
+
+                bouton_cat_tous.description = (
+                    "☑️ Tout desactiver"
+                    if change["new"]
+                    else "☑️ Tout activer"
+                )
+
+            bouton_cat_tous.observe(
+                changement_categorie,
+                names="value"
+            )
+
+            bloc_categorie = widgets.VBox(
+                [bouton_cat_tous] + boutons
+            )
+
+            accordion = widgets.Accordion(
+                children=[
+                    bloc_categorie
+                ]
+            )
+
+            accordion.set_title(
+                0,
+                f"{categorie} ({len(modeles)})"
+            )
+
+            accordions_categories_locales.append(
+                accordion
+            )
+
+        zone_selection_modeles.children = (
+            accordions_categories_locales
+        )
+
+    bouton_rafraichir_modeles = widgets.Button(
+
+        description=(
+            "🔄 Actualiser la liste des modèles entraînés"
+        ),
+
+        layout=widgets.Layout(
+            width="320px"
+        )
+    )
+
+    bouton_rafraichir_modeles.on_click(
+        _construire_selection_modeles
+    )
+
+    _construire_selection_modeles()  # construction initiale, selon l'etat actuel de l'entrainement
 
     # ========================================================
     # BOUTONS OPTIMISATION
@@ -3082,13 +3195,17 @@ def interface_tuning(
             "<h4>1️⃣ Sélection des modèles</h4>"
         ),
 
+        widgets.HTML(
+            "<i>Seuls les modèles déjà entraînés (étape de "
+            "modélisation) sont proposés ci-dessous.</i>"
+        ),
+
         widgets.HBox([
-            tout_selectionner_modeles
+            tout_selectionner_modeles,
+            bouton_rafraichir_modeles
         ]),
 
-        widgets.VBox(
-            accordions_categories
-        )
+        zone_selection_modeles
     ])
 
     bloc_commandes = widgets.VBox([
