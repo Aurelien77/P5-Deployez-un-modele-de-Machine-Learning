@@ -8,6 +8,7 @@ d'analyse Globale / Locale, et options globales.
 
 import sys
 import os
+import traceback
 import shap
 import matplotlib.pyplot as plt
 import ipywidgets as widgets
@@ -22,13 +23,18 @@ MODE_LOCALE = "🔍 Locale"
 MODE_LES_DEUX = "🌍🔍 Globale + Locale"
 
 # Libellés des sources de modèles (utilisés comme constantes de comparaison)
-SOURCE_BASE = "📦 Modèles de base"
-SOURCE_OPTIMISE = "⚙️ Modèles optimisés (hyperparamètres)"
+# Volontairement courts : ToggleButtons tronque le texte si le libellé est
+# trop long pour la largeur de bouton par défaut. Le détail complet est
+# donné juste en dessous, dans source_selector_hint.
+SOURCE_BASE = "📦 Base"
+SOURCE_AVEC_RECHERCHE = "🔍 Optimisé (avec recherche)"
+SOURCE_SANS_RECHERCHE = "⚙️ Optimisé (sans recherche)"
 
-# Nom de la variable, dans le namespace du notebook, associée à chaque source
-VARIABLE_PAR_SOURCE = {
-    SOURCE_BASE: "fitted_pipelines_widget",
-    SOURCE_OPTIMISE: "best_pipelines",
+# Description humaine de ce que chaque source va chercher, pour les messages d'erreur
+DESCRIPTION_PAR_SOURCE = {
+    SOURCE_BASE: "`fitted_pipelines_widget` (étape d'entraînement de base)",
+    SOURCE_AVEC_RECHERCHE: "les résultats du mode « 🔍 Avec recherche d'hyperparamètres » de l'interface de tuning",
+    SOURCE_SANS_RECHERCHE: "les résultats du mode « 📦 Modèle de base (sans recherche) » de l'interface de tuning",
 }
 
 
@@ -50,34 +56,103 @@ def interface_analyse_shap():
     )
 
     # ========================================================
-    # CHOIX DE LA SOURCE : MODELES DE BASE / MODELES OPTIMISES
+    # CHOIX DE LA SOURCE : MODELES DE BASE / OPTIMISES (AVEC OU SANS RECHERCHE)
     # ========================================================
     #
-    # - Modèles de base : ceux entraînés avec les hyperparamètres
-    #   par défaut (main_ns["fitted_pipelines_widget"], issu de
-    #   l'étape d'entraînement / d'étude des modèles).
-    # - Modèles optimisés : ceux issus du tuning d'hyperparamètres
-    #   (main_ns["best_pipelines"], issu de l'interface de tuning).
+    # - Modèles de base : ceux entraînés avec les hyperparamètres par
+    #   défaut, hors de toute interface de tuning
+    #   (main_ns["fitted_pipelines_widget"], issu de l'étape
+    #   d'entraînement / d'étude des modèles).
+    # - Optimisés — avec recherche : ceux issus du mode
+    #   "🔍 Avec recherche d'hyperparamètres" de l'interface de tuning
+    #   (GridSearchCV a exploré une grille de valeurs).
+    # - Optimisés — sans recherche : ceux issus du mode
+    #   "📦 Modèle de base (sans recherche)" de l'interface de tuning
+    #   (un seul fit, hyperparamètres par défaut, mais repassés par le
+    #   même pipeline / pré-traitement que le tuning).
     #
-    # On peut basculer de l'un à l'autre directement ici, sans
-    # relancer le notebook : la liste des modèles proposés et les
-    # analyses SHAP se recalculent sur la source sélectionnée.
+    # Ces deux derniers sont lus dans main_ns["resultats_par_mode"],
+    # rempli par hyperparameters_interface.py, ce qui permet de garder
+    # les deux résultats disponibles en même temps et de basculer de
+    # l'un à l'autre ici sans rien relancer.
 
     source_selector = widgets.ToggleButtons(
-        options=[SOURCE_BASE, SOURCE_OPTIMISE],
+        options=[SOURCE_BASE, SOURCE_AVEC_RECHERCHE, SOURCE_SANS_RECHERCHE],
         value=SOURCE_BASE,
         description="Modèles à expliquer :",
-        style={'description_width': 'initial'},
-        button_style=''
+        style={'description_width': 'initial', 'button_width': 'auto'},
+        button_style='',
+        layout=widgets.Layout(width='auto')
+    )
+
+    source_selector_hint = widgets.HTML(
+        "<i>📦 Base = <code>fitted_pipelines_widget</code> (entraînement initial, "
+        "sans passer par le tuning) &nbsp;•&nbsp; "
+        "🔍 Optimisé (avec recherche) = mode « Avec recherche d'hyperparamètres » "
+        "de l'interface de tuning &nbsp;•&nbsp; "
+        "⚙️ Optimisé (sans recherche) = mode « Modèle de base (sans recherche) » "
+        "de l'interface de tuning.</i>"
     )
 
     def _get_pipelines_dict():
         """Retourne le dict {nom_modele: pipeline} correspondant à la
-        source actuellement sélectionnée (base ou optimisée)."""
+        source actuellement sélectionnée (base, avec ou sans recherche
+        d'hyperparamètres)."""
 
         main_ns = sys.modules['__main__'].__dict__
-        nom_variable = VARIABLE_PAR_SOURCE[source_selector.value]
-        return main_ns.get(nom_variable, {}) or {}
+
+        if source_selector.value == SOURCE_BASE:
+            return main_ns.get("fitted_pipelines_widget", {}) or {}
+
+        cle_mode = (
+            "avec_recherche"
+            if source_selector.value == SOURCE_AVEC_RECHERCHE
+            else "sans_recherche"
+        )
+
+        resultats_par_mode = main_ns.get("resultats_par_mode", {}) or {}
+
+        if cle_mode in resultats_par_mode:
+            return resultats_par_mode[cle_mode].get("best_pipelines", {}) or {}
+
+        # Repli de compatibilité : si l'interface de tuning utilisée ne
+        # gère pas encore resultats_par_mode (ancienne version), on ne
+        # peut retomber sur `best_pipelines` que si l'on est certain que
+        # c'est bien le mode demandé qui a été exécuté en dernier.
+        if main_ns.get("mode_optimisation_actif") == cle_mode:
+            return main_ns.get("best_pipelines", {}) or {}
+
+        return {}
+
+    def _diagnostic_source_vide():
+        """Message expliquant pourquoi la source sélectionnée est vide,
+        pour distinguer « module de tuning pas à jour » de « mode pas
+        encore lancé »."""
+
+        main_ns = sys.modules['__main__'].__dict__
+
+        if source_selector.value == SOURCE_BASE:
+            return (
+                f"Aucun modèle trouvé dans {DESCRIPTION_PAR_SOURCE[SOURCE_BASE]}. "
+                "Avez-vous exécuté l'entraînement ?"
+            )
+
+        if "resultats_par_mode" not in main_ns:
+            return (
+                "`resultats_par_mode` est introuvable dans le notebook : la "
+                "version de `hyperparameters_interface.py` chargée ici ne "
+                "gère pas encore les modes séparés. Copiez la dernière "
+                "version du module, redémarrez le kernel (ou ré-exécutez "
+                "l'import), puis relancez la cellule qui affiche "
+                "`interface_tuning(...)`."
+            )
+
+        return (
+            f"Aucun modèle trouvé pour {DESCRIPTION_PAR_SOURCE[source_selector.value]}. "
+            "Ce mode n'a pas encore été lancé — allez dans l'interface de "
+            "tuning, sélectionnez ce mode, puis cliquez sur "
+            "« 🚀 Optimisation automatique » (ou « ⚙️ Optimisation manuelle »)."
+        )
 
     # ========================================================
     # CHOIX DU TYPE D'ANALYSE : GLOBALE / LOCALE / LES DEUX
@@ -175,20 +250,10 @@ def interface_analyse_shap():
         if b is not None:
             with output_shap:
                 clear_output()
-                nom_variable = VARIABLE_PAR_SOURCE[source_selector.value]
                 if model_names:
                     print(f"🔄 Liste rafraîchie ({source_selector.value}) : {len(model_names)} modèle(s) trouvé(s).")
                 else:
-                    if source_selector.value == SOURCE_OPTIMISE:
-                        print(
-                            f"⚠️ Aucun modèle trouvé dans `{nom_variable}`. "
-                            "Avez-vous lancé l'optimisation d'hyperparamètres ?"
-                        )
-                    else:
-                        print(
-                            f"⚠️ Aucun modèle trouvé dans `{nom_variable}`. "
-                            "Avez-vous exécuté l'entraînement ?"
-                        )
+                    print(f"⚠️ {_diagnostic_source_vide()}")
 
     # Rafraîchit la liste des modèles à chaque changement de source
     def on_source_change(change):
@@ -256,7 +321,18 @@ def interface_analyse_shap():
             shap_values_locaux.feature_names = list(feature_names)
         except Exception as e:
             print(f"   ⚠️ Impossible de préparer l'explication locale : {e}")
+            traceback.print_exc()
             return
+
+        # Pour un modèle mono-sortie (régression / score linéaire), base_values peut être
+        # un vecteur de longueur 1 au lieu d'un scalaire : shap.plots.waterfall exige un
+        # scalaire, d'où un échec silencieux "capté" plus haut. On normalise ici.
+        try:
+            base = shap_values_locaux.base_values
+            if hasattr(base, "__len__") and len(base) == 1:
+                shap_values_locaux.base_values = base[0]
+        except Exception:
+            pass
 
         shap.plots.waterfall(shap_values_locaux, show=True)
         plt.close()
@@ -269,18 +345,15 @@ def interface_analyse_shap():
                 main_ns = sys.modules['__main__'].__dict__
                 current_fitted_pipelines = _get_pipelines_dict()
 
-                if not current_fitted_pipelines or "X_test" not in main_ns:
-                    nom_variable = VARIABLE_PAR_SOURCE[source_selector.value]
-                    if source_selector.value == SOURCE_OPTIMISE:
-                        print(
-                            f"❌ Erreur : `{nom_variable}` est vide ou absent. "
-                            "Veuillez d'abord lancer l'optimisation d'hyperparamètres !"
-                        )
-                    else:
-                        print(
-                            f"❌ Erreur : `{nom_variable}` est vide ou absent. "
-                            "Veuillez d'abord exécuter l'entraînement des modèles !"
-                        )
+                if not current_fitted_pipelines:
+                    print(f"❌ Erreur : {_diagnostic_source_vide()}")
+                    return
+
+                if "X_test" not in main_ns:
+                    print(
+                        "❌ Erreur : `X_test` est introuvable dans le notebook. "
+                        "Veuillez d'abord exécuter l'étape qui le crée."
+                    )
                     return
 
                 current_X_test = main_ns["X_test"]
@@ -322,6 +395,8 @@ def interface_analyse_shap():
                     except:
                         feature_names = current_X_test.columns
 
+                    n_samples_bg = X_test_transformed.shape[0]
+
                     if any(tree_type in model_name for tree_type in ["XGBoost", "GradientBoosting", "RandomForest"]):
                         explainer = shap.TreeExplainer(classifier)
                         shap_values = explainer(X_test_transformed)
@@ -331,27 +406,54 @@ def interface_analyse_shap():
 
                     else:
                         if any(lin in model_name for lin in ["LogisticRegression", "LogReg", "ElasticNet", "Lasso", "Ridge"]):
-                            # Correction pour LinearExplainer : utilisation d'un masker Indépendant
-                            masker = shap.maskers.Independent(X_test_transformed, max_samples=50)
+                            # Masker Indépendant : on utilise tout l'échantillon disponible pour
+                            # éviter l'avertissement "Background dataset has N samples but
+                            # max_samples=50" (le sous-échantillonnage à 50 n'était qu'une
+                            # valeur arbitraire, pas une nécessité).
+                            masker = shap.maskers.Independent(X_test_transformed, max_samples=n_samples_bg)
                             explainer = shap.LinearExplainer(classifier, masker)
+                            shap_values = explainer(X_test_transformed)
                         else:
-                            background = shap.kmeans(X_test_transformed, 10)
-                            explainer = shap.KernelExplainer(classifier.predict_proba, background)
+                            # Modèles "boîte noire" (SVM, KNN, ...) : on choisit la fonction à
+                            # expliquer selon ce que le modèle expose réellement. Un régresseur
+                            # (ex : SVR_Linear) n'a pas de predict_proba -> AttributeError
+                            # immédiate sinon, ce qui faisait échouer TOUTE l'analyse (globale
+                            # ET locale) pour ce modèle.
+                            background = shap.kmeans(X_test_transformed, min(10, n_samples_bg))
 
-                        shap_values = explainer(X_test_transformed)
+                            if hasattr(classifier, "predict_proba"):
+                                fonction_cible = classifier.predict_proba
+                            elif hasattr(classifier, "decision_function"):
+                                fonction_cible = classifier.decision_function
+                            else:
+                                fonction_cible = classifier.predict
+
+                            explainer = shap.KernelExplainer(fonction_cible, background)
+                            shap_values = explainer(X_test_transformed)
 
                         if hasattr(shap_values, "values") and shap_values.values.ndim == 3:
                             shap_values = shap_values[..., 1]
 
-                    # Affichage du/des graphique(s) SHAP selon le mode choisi
-                    if faire_globale:
-                        _analyse_globale(shap_values, X_test_transformed, feature_names, model_name)
-
-                    if faire_locale:
-                        _analyse_locale(shap_values, pipeline, current_X_test, feature_names, idx_local)
-
                 except Exception as e:
-                    print(f"   ⚠️ Impossible de générer SHAP pour {model_name} (Erreur : {e})")
+                    print(f"   ⚠️ Impossible de calculer les valeurs SHAP pour {model_name} (Erreur : {e})")
+                    traceback.print_exc()
+                    continue
+
+                # Globale et locale sont maintenant dans des try/except séparés : un échec sur
+                # l'une des deux n'empêche plus d'afficher (ni de diagnostiquer) l'autre.
+                if faire_globale:
+                    try:
+                        _analyse_globale(shap_values, X_test_transformed, feature_names, model_name)
+                    except Exception as e:
+                        print(f"   ⚠️ Échec de l'analyse globale pour {model_name} (Erreur : {e})")
+                        traceback.print_exc()
+
+                if faire_locale:
+                    try:
+                        _analyse_locale(shap_values, pipeline, current_X_test, feature_names, idx_local)
+                    except Exception as e:
+                        print(f"   ⚠️ Échec de l'analyse locale pour {model_name} (Erreur : {e})")
+                        traceback.print_exc()
 
             print("\n✅ Analyse SHAP terminée !")
 
@@ -371,6 +473,7 @@ def interface_analyse_shap():
 
     return widgets.VBox([
         source_selector,
+        source_selector_hint,
         widgets.HTML("<hr style='margin: 10px 0px;'>"),
         btn_refresh,
         widgets.HTML("<hr style='margin: 10px 0px;'>"),

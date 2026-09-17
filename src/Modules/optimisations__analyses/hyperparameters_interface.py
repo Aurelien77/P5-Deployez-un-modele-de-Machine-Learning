@@ -53,6 +53,23 @@ from IPython.display import (
 
 
 # ============================================================
+# 0. MODES D'OPTIMISATION (avec / sans recherche d'hyperparamètres)
+# ============================================================
+#
+# - AVEC_RECHERCHE : comportement historique -> on utilise les grilles
+#   (automatiques via obtenir_grilles_hyperparametres(), ou manuelles
+#   via les widgets) et GridSearchCV explore plusieurs valeurs.
+# - SANS_RECHERCHE : on force une grille vide pour TOUS les modèles
+#   sélectionnés -> GridSearchCV se contente d'un seul fit (le modèle
+#   "de base", avec les hyperparamètres par défaut définis dans
+#   dict_modeles), sans aucune exploration. Utile quand on veut juste
+#   analyser/comparer les modèles bruts, sans passer par le tuning.
+
+MODE_AVEC_RECHERCHE = "🔍 Avec recherche d'hyperparamètres"
+MODE_SANS_RECHERCHE = "📦 Modèle de base (sans recherche)"
+
+
+# ============================================================
 # 1. GRILLES AUTOMATIQUES
 # ============================================================
 
@@ -2050,6 +2067,49 @@ def interface_tuning(
     _construire_selection_modeles()  # construction initiale, selon l'etat actuel de l'entrainement
 
     # ========================================================
+    # MODE : AVEC / SANS RECHERCHE D'HYPERPARAMETRES
+    # ========================================================
+    #
+    # Permet de choisir si l'optimisation doit vraiment chercher des
+    # hyperparamètres (grilles auto ou manuelles, comportement
+    # historique) ou simplement ajuster/analyser les modèles avec
+    # leurs hyperparamètres par défaut (aucune grille, un seul fit).
+    # On peut re-basculer d'un mode à l'autre à tout moment, y compris
+    # sans relancer de calcul si les deux ont déjà été exécutés une
+    # fois (cf. bouton_basculer_mode plus bas).
+
+    mode_recherche = widgets.ToggleButtons(
+        options=[MODE_AVEC_RECHERCHE, MODE_SANS_RECHERCHE],
+        value=MODE_AVEC_RECHERCHE,
+        description="Mode :",
+        style={'description_width': 'initial'},
+        button_style=''
+    )
+
+    mode_recherche_hint = widgets.HTML(
+        "<i>« 🔍 Avec recherche » explore les grilles "
+        "(automatiques ou manuelles) via GridSearchCV. "
+        "« 📦 Modèle de base » ignore toutes les grilles et se "
+        "contente d'un seul fit par modèle, avec ses "
+        "hyperparamètres par défaut — pratique pour analyser les "
+        "modèles bruts sans passer par le tuning.</i>"
+    )
+
+    label_mode_actif = widgets.HTML(
+        "<i>Aucune optimisation lancée pour l'instant.</i>"
+    )
+
+    bouton_basculer_mode = widgets.Button(
+        description="🔁 Basculer sans relancer",
+        button_style='',
+        tooltip=(
+            "Repointe best_pipelines vers l'autre mode, "
+            "seulement s'il a déjà été calculé une fois."
+        ),
+        layout=widgets.Layout(width="230px")
+    )
+
+    # ========================================================
     # BOUTONS OPTIMISATION
     # ========================================================
 
@@ -2097,6 +2157,18 @@ def interface_tuning(
         layout=widgets.Layout(
             width="230px"
         )
+    )
+
+    def _on_mode_recherche_change(change):
+        sans_recherche = (change['new'] == MODE_SANS_RECHERCHE)
+        # En mode "sans recherche", les valeurs manuelles n'ont plus
+        # de sens (aucune grille n'est appliquée) : on grise le
+        # bouton pour éviter toute confusion.
+        bouton_manuel.disabled = sans_recherche
+
+    mode_recherche.observe(
+        _on_mode_recherche_change,
+        names='value'
     )
 
     # ========================================================
@@ -2867,6 +2939,33 @@ def interface_tuning(
                 )
 
             # =================================================
+            # MODE "SANS RECHERCHE" : ECRASE TOUTE GRILLE
+            # =================================================
+            # Que le bouton cliqué soit "auto" ou "manuel", si le
+            # mode sélectionné est "Modèle de base", on ignore les
+            # grilles ci-dessus et on force une grille vide pour
+            # chaque modèle : GridSearchCV ne fera plus qu'un seul
+            # fit, avec les hyperparamètres par défaut du modèle.
+
+            mode_sans_recherche = (
+                mode_recherche.value
+                == MODE_SANS_RECHERCHE
+            )
+
+            if mode_sans_recherche:
+
+                grilles = {
+                    nom: {}
+                    for nom in modeles_selectionnes
+                }
+
+                print(
+                    "📦 Mode « Modèle de base » : aucune recherche "
+                    "d'hyperparamètres, un seul fit par modèle "
+                    "(hyperparamètres par défaut).\n"
+                )
+
+            # =================================================
             # OPTIMISATION
             # =================================================
 
@@ -2905,6 +3004,34 @@ def interface_tuning(
             namespace[
                 "best_pipelines"
             ] = best_pipelines
+
+            # On conserve aussi les résultats séparément par mode,
+            # pour ne pas écraser l'autre mode quand on change et
+            # relance : ça permet de garder "avec recherche" ET
+            # "sans recherche" disponibles en même temps, et de
+            # rebasculer de l'un à l'autre sans tout relancer.
+
+            cle_mode = (
+                "sans_recherche"
+                if mode_sans_recherche
+                else "avec_recherche"
+            )
+
+            namespace.setdefault(
+                "resultats_par_mode", {}
+            )[cle_mode] = {
+                "df": df_res,
+                "best_pipelines": best_pipelines,
+            }
+
+            namespace["mode_optimisation_actif"] = cle_mode
+
+            label_mode_actif.value = (
+                f"<b>Mode actif :</b> "
+                f"{mode_recherche.value} "
+                f"— <code>best_pipelines</code> pointe vers ce "
+                f"résultat."
+            )
 
             # ------------------------------------------------
             # REVELATION DES BLOCS "RESULTATS"
@@ -2972,6 +3099,104 @@ def interface_tuning(
 
     bouton_manuel.on_click(
         lancer_manuel
+    )
+
+    # ========================================================
+    # CALLBACK BASCULE DE MODE (SANS RELANCER)
+    # ========================================================
+    #
+    # Permet de repasser d'un mode à l'autre (avec/sans recherche
+    # d'hyperparamètres) sans recalcul, à condition que ce mode ait
+    # déjà été exécuté au moins une fois dans cette session.
+
+    def basculer_mode(_):
+
+        with sortie:
+
+            clear_output()
+
+            actif = namespace.get(
+                "mode_optimisation_actif"
+            )
+
+            cible = (
+                "avec_recherche"
+                if actif == "sans_recherche"
+                else "sans_recherche"
+            )
+
+            dispo = namespace.get(
+                "resultats_par_mode", {}
+            )
+
+            if cible not in dispo:
+
+                label_cible = (
+                    MODE_AVEC_RECHERCHE
+                    if cible == "avec_recherche"
+                    else MODE_SANS_RECHERCHE
+                )
+
+                print(
+                    f"⚠️ Pas encore de résultats en mode "
+                    f"« {label_cible} ». Lancez d'abord une "
+                    f"optimisation dans ce mode."
+                )
+
+                return
+
+            resultat_cible = dispo[cible]
+
+            namespace["best_pipelines"] = (
+                resultat_cible["best_pipelines"]
+            )
+
+            namespace["df_tuned_res"] = (
+                resultat_cible["df"]
+            )
+
+            namespace["mode_optimisation_actif"] = cible
+
+            # Synchronise le sélecteur visuel avec le mode
+            # désormais actif, sans redéclencher de calcul (pas de
+            # clic sur un bouton d'optimisation).
+            mode_recherche.value = (
+                MODE_AVEC_RECHERCHE
+                if cible == "avec_recherche"
+                else MODE_SANS_RECHERCHE
+            )
+
+            label_mode_actif.value = (
+                f"<b>Mode actif :</b> "
+                f"{mode_recherche.value} "
+                f"— <code>best_pipelines</code> pointe vers ce "
+                f"résultat (rebasculé sans recalcul)."
+            )
+
+            print(
+                f"✅ best_pipelines pointe maintenant vers le "
+                f"mode « {mode_recherche.value} » (sans recalcul).\n"
+            )
+
+            afficher_resultats_tuning(
+
+                resultat_cible["df"],
+
+                colonne_tri=(
+                    tri_colonne.value
+                ),
+
+                ordre_decroissant=(
+                    tri_decroissant.value
+                ),
+
+                colonnes_visibles=(
+                    obtenir_colonnes_visibles()
+                )
+            )
+
+    bouton_basculer_mode.on_click(
+        basculer_mode
     )
 
     # ========================================================
@@ -3640,9 +3865,18 @@ def interface_tuning(
             "<h4>2️⃣ Lancer l'optimisation</h4>"
         ),
 
+        mode_recherche,
+
+        mode_recherche_hint,
+
         widgets.HBox([
             bouton_auto,
             bouton_manuel
+        ]),
+
+        widgets.HBox([
+            bouton_basculer_mode,
+            label_mode_actif
         ]),
 
         widgets.HBox([
