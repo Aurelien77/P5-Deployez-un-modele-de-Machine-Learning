@@ -31,6 +31,7 @@ from sklearn.tree import DecisionTreeClassifier
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, AdaBoostClassifier
 from sklearn.dummy import DummyClassifier
+from sklearn.calibration import CalibratedClassifierCV
 import xgboost as xgb
 
 
@@ -161,6 +162,13 @@ def obtenir_modeles(random_state=42):
         "LogisticRegression_L2": LogisticRegression(
             max_iter=1000, class_weight='balanced', random_state=random_state
         ),
+        "LogisticRegression_L2_calibre": CalibratedClassifierCV(
+            estimator=LogisticRegression(
+                max_iter=1000, class_weight='balanced', random_state=random_state
+            ),
+            method="sigmoid",
+            cv=5,
+        ),
         "Ridge": RidgeClassifier(random_state=random_state),
         "ElasticNet_LogReg": LogisticRegression(
             penalty='elasticnet', solver='saga', l1_ratio=0.5, max_iter=1000,
@@ -192,6 +200,7 @@ CATEGORIES_MODELES = OrderedDict([
     ("Référence (Baseline)", ["Dummy_Stratified"]),
     ("Linéaires & Régularisés", [
         "LogisticRegression_None", "LogisticRegression_L1", "LogisticRegression_L2",
+        "LogisticRegression_L2_calibre",
         "Ridge", "ElasticNet_LogReg", "SVR_Linear",
     ]),
     ("Arbres & Boosting", [

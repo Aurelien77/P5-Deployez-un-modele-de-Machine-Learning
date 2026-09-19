@@ -112,6 +112,16 @@ def obtenir_grilles_hyperparametres():
             ]
         },
 
+        "LogisticRegression_L2_calibre": {
+            "classifier__estimator__C": [
+                0.001,
+                0.01,
+                0.1,
+                1,
+                10
+            ]
+        },
+
         "Lasso_LogReg": {
             "classifier__C": [
                 0.001,
@@ -3836,6 +3846,10 @@ def interface_tuning(
                     ]
                 )
 
+                seuil_sauve = float(
+                    threshold.value
+                )
+
                 nom_fichier = (
 
                     f"modele_top"
@@ -3849,14 +3863,30 @@ def interface_tuning(
                     / nom_fichier
                 )
 
+                paquet = {
+                    "pipeline": modele,
+                    "seuil": seuil_sauve,
+                    "nom_modele": nom_modele,
+                    "metric_tri": metric,
+                }
+
                 joblib.dump(
-                    modele,
+                    paquet,
                     chemin
                 )
 
                 print(
-                    f"✅ Sauvegardé : "
-                    f"{chemin}"
+                    f"✅ Sauvegardé : {chemin}"
+                )
+                print(
+                    f"   seuil enregistré : {seuil_sauve:.2f}"
+                )
+                print(
+                    "   Chargement :\n"
+                    "   paquet = joblib.load(chemin)\n"
+                    "   modele = paquet['pipeline']\n"
+                    "   seuil = paquet['seuil']\n"
+                    "   y_hat = (modele.predict_proba(X)[:, 1] >= seuil).astype(int)"
                 )
 
     bouton_top.on_click(
