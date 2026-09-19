@@ -1807,6 +1807,68 @@ _ANCIENNES_POUR_CROISEMENT: tuple[str, ...] = (
 )
 
 
+def _verdict_conservation(
+    lien_y: float,
+    forme: str,
+    max_abs_r: float,
+    jumeau: str | None,
+) -> tuple[str, str]:
+    """Règle unique : lié à Y + peu lié aux sources → garder."""
+    ly = abs(lien_y) if lien_y is not None and np.isfinite(lien_y) else 0.0
+    mr = max_abs_r if max_abs_r is not None and np.isfinite(max_abs_r) else 0.0
+    nom_jumeau = jumeau or "une variable source"
+
+    if forme == "qualitative" and ly >= 0.15:
+        return "GARDER", "Cramér V utile : ce n'est pas un doublon numérique"
+    if ly < 0.08:
+        if mr >= 0.70:
+            return "RETIRER", f"lien avec Y plat et copie de {nom_jumeau}"
+        return "RETIRER", "presque aucun lien avec le départ"
+    if mr >= 0.70:
+        return "RETIRER", f"redondant avec {nom_jumeau} (ρ={mr:.2f})"
+    if mr >= 0.55:
+        return "OPTIONNEL", f"proche de {nom_jumeau} (ρ={mr:.2f}) : n'en garder qu'une"
+    return "GARDER", "lié au départ et peu redondant avec les sources"
+
+
+def tableau_decision_features(
+    tableau_y: pd.DataFrame,
+    extraire: pd.DataFrame | None,
+    cible: str,
+) -> pd.DataFrame:
+    """Une ligne par feature métier : lien Y, doublon éventuel, décision."""
+    lignes = []
+    for _, row in tableau_y.iterrows():
+        feat = row["feature"]
+        lien_y = float(row["lien_avec_Y"]) if pd.notna(row["lien_avec_Y"]) else float("nan")
+        max_abs_r, jumeau = float("nan"), None
+        if extraire is not None and feat in extraire.index:
+            serie = extraire.loc[feat].drop(labels=[cible], errors="ignore").abs()
+            if not serie.empty and serie.notna().any():
+                jumeau = str(serie.idxmax())
+                max_abs_r = float(serie.max())
+        decision, motif = _verdict_conservation(lien_y, row["forme"], max_abs_r, jumeau)
+        lignes.append(
+            {
+                "feature": feat,
+                "lien_avec_Y": lien_y,
+                "mesure": row["methode_Y"],
+                "plus_proche": jumeau,
+                "ρ_plus_proche": max_abs_r,
+                "décision": decision,
+                "pourquoi": motif,
+            }
+        )
+    out = pd.DataFrame(lignes)
+    ordre = {"GARDER": 0, "OPTIONNEL": 1, "RETIRER": 2}
+    if not out.empty:
+        out["_ord"] = out["décision"].map(ordre)
+        out["_abs"] = out["lien_avec_Y"].abs()
+        out = out.sort_values(["_ord", "_abs"], ascending=[True, False])
+        out = out.drop(columns=["_ord", "_abs"]).reset_index(drop=True)
+    return out
+
+
 def comparer_nouvelles_et_anciennes(
     df: pd.DataFrame,
     target_col: str,
@@ -1865,6 +1927,7 @@ def comparer_nouvelles_et_anciennes(
         fig.tight_layout()
         plt.show()
 
+    extraire = None
     # Heatmap nouvelles (lignes) × (Y + anciennes numériques) (colonnes)
     cols_num_anciennes = []
     for c in anciennes:
@@ -1909,6 +1972,17 @@ def comparer_nouvelles_et_anciennes(
         plt.setp(ax2.get_yticklabels(), rotation=0, fontsize=8)
         fig2.tight_layout()
         plt.show()
+
+    if not tableau_y.empty:
+        decision = tableau_decision_features(tableau_y, extraire, target_col)
+        print("\n--- Décision simple : garder ou retirer ---")
+        print("GARDER     = lié à Y et pas une copie d'une variable déjà là")
+        print("OPTIONNEL  = un peu utile mais proche d'une source : n'en garder qu'une")
+        print("RETIRER    = lien plat avec Y, ou doublon (ρ ≥ 0,70 avec une ancienne)")
+        _afficher(decision.round(2))
+        print("\nÀ cocher ON  :", decision.loc[decision["décision"] == "GARDER", "feature"].tolist())
+        print("À discuter    :", decision.loc[decision["décision"] == "OPTIONNEL", "feature"].tolist())
+        print("À décocher    :", decision.loc[decision["décision"] == "RETIRER", "feature"].tolist())
 
     return tableau_y if not tableau_y.empty else None
 

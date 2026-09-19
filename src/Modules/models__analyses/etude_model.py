@@ -510,6 +510,18 @@ def plot_importance_grille(importances_pivot, top_n=15, ncols=2, scoring='f1', t
 # ----------------------------------------------------------------------
 # 6. Graphique Beeswarm SHAP (Nouveau)
 # ----------------------------------------------------------------------
+def _noms_features_preprocesseur(preprocessor, X_transforme) -> list[str]:
+    """Noms après ColumnTransformer (num_lin__age, cat__poste_x_niveau_...)."""
+    n = X_transforme.shape[1]
+    try:
+        noms = list(preprocessor.get_feature_names_out())
+        if len(noms) == n:
+            return [str(n_) for n_ in noms]
+    except Exception:
+        pass
+    return [f"feature_{i}" for i in range(n)]
+
+
 def _calculer_shap_values(pipeline, X_eval, nom_modele="Modèle"):
     """
     Fonction interne partagée : calcule les valeurs SHAP pour un pipeline donné.
@@ -526,13 +538,12 @@ def _calculer_shap_values(pipeline, X_eval, nom_modele="Modèle"):
 
         if preprocessor is not None:
             X_transforme = preprocessor.transform(X_eval)
-            try:
-                feature_names = preprocessor.get_feature_names_out()
-            except Exception:
-                feature_names = [f"feat_{i}" for i in range(X_transforme.shape[1])]
+            if hasattr(X_transforme, "toarray"):
+                X_transforme = X_transforme.toarray()
+            feature_names = _noms_features_preprocesseur(preprocessor, X_transforme)
         else:
             X_transforme = X_eval
-            feature_names = X_eval.columns
+            feature_names = list(X_eval.columns) if hasattr(X_eval, "columns") else None
     else:
         model = pipeline
         X_transforme = X_eval
@@ -566,6 +577,16 @@ def _calculer_shap_values(pipeline, X_eval, nom_modele="Modèle"):
     if len(shap_values.values.shape) == 3:
         # Cas multi-classes (ou proba à 2 colonnes) : on ne garde que la classe positive (1)
         shap_values = shap_values[..., 1]
+
+    if feature_names is not None:
+        noms = [str(n) for n in list(feature_names)]
+        n_cols = shap_values.values.shape[-1]
+        if len(noms) == n_cols:
+            try:
+                shap_values.feature_names = noms
+            except Exception:
+                pass
+            feature_names = noms
 
     return shap_values, X_transforme, feature_names
 

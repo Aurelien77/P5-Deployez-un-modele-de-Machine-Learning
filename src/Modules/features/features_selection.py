@@ -34,6 +34,56 @@ GROUP_TITLES = {
 
 FEATURES_METIER_PAR_DEFAUT: list[str] | None = None  # ne plus coder en dur : voir _charger_features_metier()
 
+FEATURES_ON_PAR_DEFAUT: frozenset[str] = frozenset({
+    "age",
+    "revenu_mensuel",
+    "annees_dans_l_entreprise",
+    "niveau_hierarchique_poste",
+    "distance_domicile_travail",
+    "satisfaction_employee_environnement",
+    "heure_supplementaires",
+    "statut_marital",
+    "frequence_deplacement",
+    "hs_et_salaire_bas",
+    "poste_x_niveau",
+    "jeune_faible_anciennete",
+    "satisfaction_min",
+    "formations_par_an",
+})
+
+FEATURES_OFF_PAR_DEFAUT: frozenset[str] = frozenset({
+    "annee_experience_totale",
+    "annees_experience_totale",
+    "annees_dans_le_poste_actuel",
+    "annees_sous_responsable_actuel",
+    "nombre_participation_pee",
+    "poste",
+    "intitule_poste",
+    "montant_augmentation_precedente",
+    "revenu_par_niveau",
+    "augmentation_salaire_precedente",
+    "augementation_salaire_precedente",
+    "inertie_poste",
+    "part_sans_promotion",
+    "annees_depuis_la_derniere_promotion",
+    "serial-worker",
+    "nombre_experiences_precedentes",
+    "performance",
+    "note_evaluation_precedente",
+    "note_evaluation_actuelle",
+    "satisfaction_globale",
+    "satisfaction_max",
+    "satisfaction_employee_nature_travail",
+    "satisfaction_employee_equipe",
+    "satisfaction_employee_equilibre_pro_perso",
+    "nb_formations_suivies",
+    "nombre_formations_suivies",
+    "genre",
+    "niveau_education",
+    "departement",
+    "domaine_etude",
+})
+
 _SUFFIXE_VALUE = "_value"
 _CANDIDATS_NEW_FEATURES = (
     "new_features",
@@ -134,6 +184,16 @@ def _nom_sans_value(nom: str) -> str:
     if nom.endswith(_SUFFIXE_VALUE):
         return nom[: -len(_SUFFIXE_VALUE)]
     return nom
+
+
+def _allume_par_defaut(nom: str) -> bool:
+    """ON si recommandé, OFF si doublon/plat, sinon ON (variable non listée)."""
+    base = _nom_sans_value(nom)
+    if base in FEATURES_OFF_PAR_DEFAUT or nom in FEATURES_OFF_PAR_DEFAUT:
+        return False
+    if base in FEATURES_ON_PAR_DEFAUT or nom in FEATURES_ON_PAR_DEFAUT:
+        return True
+    return True
 
 
 def _variantes_nom(nom: str) -> list[str]:
@@ -301,19 +361,20 @@ def creer_panneau_selection(
         if group_key not in classification or not classification[group_key]:
             continue
 
+        etats_init = [_allume_par_defaut(var) for var in classification[group_key]]
         grp_chk = widgets.Checkbox(
-            value=True,
+            value=all(etats_init) if etats_init else False,
             description=f"Activer tout : {title} ({len(classification[group_key])})",
             style={"description_width": "initial"},
         )
         var_buttons[group_key] = []
         btn_list: list[widgets.ToggleButton] = []
 
-        for var in classification[group_key]:
+        for var, allume in zip(classification[group_key], etats_init):
             t_btn = widgets.ToggleButton(
-                value=True,
-                description=_libelle_bouton(True, var, unites_df),
-                button_style="success",
+                value=allume,
+                description=_libelle_bouton(allume, var, unites_df),
+                button_style="success" if allume else "",
                 tooltip=_tooltip_variable(var, explications, unites_df),
                 layout=widgets.Layout(width="auto", margin="2px"),
             )

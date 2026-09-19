@@ -42,7 +42,9 @@ from sklearn.metrics import (
     confusion_matrix,
     ConfusionMatrixDisplay,
     roc_curve,
-    auc
+    auc,
+    precision_recall_curve,
+    average_precision_score,
 )
 
 from IPython.display import (
@@ -560,6 +562,62 @@ def _construire_figure_roc(y_true, y_proba, titre):
     ax.set_title(titre)
     ax.legend(loc="lower right")
     plt.tight_layout()
+    return fig
+
+
+def _construire_figure_precision_rappel(y_true, y_proba, threshold, titre):
+    """Courbe PR + point du seuil actuel + rappel/précision/F1 à ce seuil."""
+    y_true = np.asarray(y_true).astype(int)
+    y_proba = np.asarray(y_proba, dtype=float)
+
+    precisions, rappels, seuils = precision_recall_curve(y_true, y_proba)
+    pr_auc = average_precision_score(y_true, y_proba)
+    baseline = float(np.mean(y_true == 1))
+
+    y_pred = (y_proba >= threshold).astype(int)
+    prec_s = precision_score(y_true, y_pred, zero_division=0)
+    rec_s = recall_score(y_true, y_pred, zero_division=0)
+    f1_s = f1_score(y_true, y_pred, zero_division=0)
+
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.8))
+
+    ax = axes[0]
+    ax.plot(rappels, precisions, color="#1f77b4", linewidth=2,
+            label=f"PR-AUC = {pr_auc:.3f}")
+    ax.axhline(baseline, color="gray", linestyle="--",
+               label=f"Hasard ({baseline:.3f})")
+    ax.scatter([rec_s], [prec_s], color="red", s=70, zorder=5,
+               label=f"Seuil {threshold:.2f}")
+    ax.set_xlabel("Rappel (départs attrapés)")
+    ax.set_ylabel("Précision (alertes justes)")
+    ax.set_title(titre)
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1.02)
+    ax.legend(loc="upper right", fontsize=8)
+    ax.grid(True, linestyle=":", alpha=0.4)
+
+    ax2 = axes[1]
+    seuils_plot = np.append(seuils, 1.0)
+    f1_scores = 2 * precisions * rappels / (precisions + rappels + 1e-12)
+    ax2.plot(seuils_plot, precisions, label="Précision", color="#1f77b4")
+    ax2.plot(seuils_plot, rappels, label="Rappel", color="#ff7f0e")
+    ax2.plot(seuils_plot, f1_scores, label="F1", color="#2ca02c", linestyle="--")
+    ax2.axvline(threshold, color="red", linestyle=":", linewidth=1.6,
+                label=f"Seuil {threshold:.2f}")
+    ax2.set_xlabel("Seuil de décision")
+    ax2.set_ylabel("Score")
+    ax2.set_title("Régler le seuil")
+    ax2.set_xlim(0, 1)
+    ax2.set_ylim(0, 1.02)
+    ax2.legend(loc="best", fontsize=8)
+    ax2.grid(True, linestyle=":", alpha=0.4)
+
+    fig.suptitle(
+        f"Au seuil {threshold:.2f}  →  rappel={rec_s:.2f}   précision={prec_s:.2f}   F1={f1_s:.2f}",
+        fontsize=11,
+        y=1.02,
+    )
+    fig.tight_layout()
     return fig
 
 
@@ -1728,11 +1786,11 @@ def interface_tuning(
             0.5
         ),
 
-        min=0.1,
+        min=0.05,
 
-        max=0.9,
+        max=0.95,
 
-        step=0.05,
+        step=0.01,
 
         description="Seuil :",
 
@@ -3490,6 +3548,38 @@ def interface_tuning(
 
                 onglets.append(out_roc)
                 titres_onglets.append("📈 ROC")
+
+                # --------------------------------------------
+                # 5b) PRECISION-RAPPEL / SEUIL
+                # --------------------------------------------
+
+                out_pr = widgets.Output()
+
+                with out_pr:
+
+                    if not donnees_test_ok or y_proba_test is None:
+                        print("⚠️ X_test/y_test indisponibles.")
+                    else:
+                        try:
+                            fig = _construire_figure_precision_rappel(
+                                y_test_diag, y_proba_test, seuil_actuel,
+                                f"Précision–Rappel — {nom_modele}"
+                            )
+                            print(
+                                "Point rouge = seuil actuel du curseur. "
+                                "Baisse le seuil → plus de rappel. "
+                                "Monte le seuil → plus de précision."
+                            )
+                            plt.show()
+                            plt.close(fig)
+                        except Exception as e:
+                            print(
+                                "⚠️ Impossible de tracer la courbe "
+                                f"précision–rappel : {e}"
+                            )
+
+                onglets.append(out_pr)
+                titres_onglets.append("🎯 Précision–Rappel")
 
                 # --------------------------------------------
                 # 6) CALIBRATION

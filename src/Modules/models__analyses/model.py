@@ -755,10 +755,10 @@ def interface_modelisation_etape():
         layout=widgets.Layout(width="220px")
     )
     slider_seuil = widgets.FloatSlider(
-        value=0.5, min=0.1, max=0.9, step=0.05,
+        value=0.5, min=0.05, max=0.95, step=0.01,
         description="Seuil de décision :",
         style={"description_width": "initial"},
-        layout=widgets.Layout(width="280px"),
+        layout=widgets.Layout(width="320px"),
         readout_format='.2f'
     )
 
