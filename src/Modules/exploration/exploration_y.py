@@ -559,14 +559,38 @@ def plot_nuages_profil_junior(df: pd.DataFrame, target_col: str, max_vars: int =
     print("\n--- Nuages du profil junior (variables les plus liées entre elles) ---")
     print("Une droite de points = lien fort (âge / salaire / ancienneté).")
     print("Deux nuages qui se séparent en couleur = le départ n'est pas au même endroit.")
-    grid = sns.pairplot(
+
+    # Palette contrastée : bleu vif et saturé pour "Part", orange clair et discret pour "Reste".
+    # "Reste" est presque toujours majoritaire, donc on le rend volontairement pâle
+    # pour qu'il ne noie pas visuellement le bleu.
+    palette = {"Reste": "#F5C29B", "Part": "#0B5FFF"}
+
+    # hue_order définit aussi l'ORDRE DE DESSIN : "Reste" est tracé en premier (en dessous),
+    # "Part" est tracé en dernier (par-dessus) → le bleu n'est jamais recouvert.
+    hue_order = ["Reste", "Part"]
+
+    grid = sns.PairGrid(
         data,
         vars=cols,
         hue="_statut",
-        corner=True,
-        diag_kind="hist",
-        plot_kws={"alpha": 0.35, "s": 18, "edgecolor": "none"},
+        hue_order=hue_order,
+        palette=palette,
+        corner=False,
         height=2.15,
     )
+
+    def _scatter_par_groupe(x, y, color, label, **kwargs):
+        """Style différent selon le groupe : Part = plus gros, plus opaque, dessiné au-dessus."""
+        if label == "Part":
+            plt.scatter(x, y, color=palette["Part"], alpha=0.75, s=32,
+                        edgecolor="white", linewidth=0.3, zorder=3, label=label)
+        else:
+            plt.scatter(x, y, color=palette["Reste"], alpha=0.25, s=14,
+                        edgecolor="none", zorder=1, label=label)
+
+    grid.map_offdiag(_scatter_par_groupe)
+    grid.map_diag(sns.histplot, multiple="layer", alpha=0.5, element="step")
+    grid.add_legend(title="_statut")
+
     grid.fig.suptitle("Profil junior — nuages deux à deux", y=1.02, fontsize=13)
     plt.show()

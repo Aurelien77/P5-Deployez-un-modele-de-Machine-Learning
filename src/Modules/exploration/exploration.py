@@ -914,25 +914,117 @@ def _matrices_pearson_spearman(
     return {"pearson": corr_p, "spearman": corr_s}
 
 
+def _detecter_paires_imbriquees(
+    df: pd.DataFrame,
+    colonnes: Sequence[str],
+    seuil: float = 0.999,
+    min_obs: int = 20,
+) -> list[tuple[str, str]]:
+    """Détecte les paires (petite, grande) où petite <= grande quasi systématiquement.
+
+    Ce n'est PAS une corrélation statistique : c'est une contrainte structurelle
+    (ex. annees_dans_l_entreprise <= annee_experience_totale). Une telle paire,
+    tracée brute dans un nuage de points, produit toujours un triangle coupé net
+    plutôt qu'un vrai nuage — l'information utile est dans le ratio ou l'écart,
+    pas dans les valeurs brutes.
+    """
+    paires: list[tuple[str, str]] = []
+    cols = list(colonnes)
+    for i, a in enumerate(cols):
+        for b in cols[i + 1:]:
+            xa = _vers_numerique(df[a])
+            xb = _vers_numerique(df[b])
+            masque = xa.notna() & xb.notna()
+            if int(masque.sum()) < min_obs:
+                continue
+            xa_m, xb_m = xa[masque], xb[masque]
+            if xa_m.equals(xb_m):
+                continue
+            taux_a_sous_b = float((xa_m <= xb_m).mean())
+            taux_b_sous_a = float((xb_m <= xa_m).mean())
+            if taux_a_sous_b >= seuil:
+                paires.append((a, b))  # a (petite) <= b (grande)
+            elif taux_b_sous_a >= seuil:
+                paires.append((b, a))
+    return paires
+
+
+def _remplacer_paires_imbriquees(
+    df: pd.DataFrame,
+    colonnes: Sequence[str],
+    seuil: float = 0.999,
+) -> tuple[pd.DataFrame, list[str], list[tuple[str, str]]]:
+    """Remplace chaque paire imbriquée détectée par un ratio et un écart.
+
+    Retourne (data_transformee, colonnes_finales, paires_detectees).
+    Les variables non concernées par une contrainte restent inchangées.
+    """
+    cols = list(colonnes)
+    paires = _detecter_paires_imbriquees(df, cols, seuil=seuil)
+
+    data = pd.DataFrame(index=df.index)
+    colonnes_finales: list[str] = []
+    colonnes_remplacees: set[str] = set()
+
+    for petite, grande in paires:
+        xp = _vers_numerique(df[petite])
+        xg = _vers_numerique(df[grande])
+        nom_ratio = f"ratio_{petite}_sur_{grande}"
+        nom_ecart = f"ecart_{grande}_moins_{petite}"
+        data[nom_ratio] = (xp / xg.replace(0, np.nan)).round(3)
+        data[nom_ecart] = (xg - xp).round(3)
+        colonnes_finales += [nom_ratio, nom_ecart]
+        colonnes_remplacees.add(petite)
+        colonnes_remplacees.add(grande)
+
+    for c in cols:
+        if c in colonnes_remplacees:
+            continue
+        data[c] = _vers_numerique(df[c])
+        colonnes_finales.append(c)
+
+    return data, colonnes_finales, paires
+
+
 def plot_matrice_nuages(
     df: pd.DataFrame,
     colonnes: Sequence[str],
     cible: str | None = None,
     max_vars: int = 6,
     nom: str = "corrélations",
+    remplacer_contraintes: bool = True,
 ) -> None:
-    """Matrice de nuages (pairplot) : diagonale = distribution, hors diagonale = nuage."""
-    cols = [c for c in colonnes if c in df.columns]
-    if cible and cible in cols:
-        cols = [c for c in cols if c != cible]
-    if len(cols) < 2:
-        return
-    cols = cols[:max_vars]
+    """Matrice de nuages (pairplot) : diagonale = distribution, hors diagonale = nuage.
 
-    data = df[cols + ([cible] if cible and cible in df.columns else [])].copy()
-    for c in cols:
-        data[c] = _vers_numerique(data[c])
-    data = data.dropna()
+    Si ``remplacer_contraintes`` est True (par défaut), toute paire de variables
+    imbriquées (petite <= grande, ex. ancienneté poste <= ancienneté entreprise)
+    est remplacée par un ratio et un écart : ça évite le triangle coupé net,
+    qui est un artefact structurel et non un vrai nuage de corrélation.
+    """
+    cols_brutes = [c for c in colonnes if c in df.columns]
+    if cible and cible in cols_brutes:
+        cols_brutes = [c for c in cols_brutes if c != cible]
+    if len(cols_brutes) < 2:
+        return
+
+    if remplacer_contraintes:
+        data, cols, paires = _remplacer_paires_imbriquees(df, cols_brutes)
+        if paires:
+            print(
+                f"\n--- Paires imbriquées détectées ({nom}) : remplacées par ratio/écart ---"
+            )
+            for petite, grande in paires:
+                print(f"  • {petite} ≤ {grande}  →  ratio_{petite}_sur_{grande}, ecart_{grande}_moins_{petite}")
+        if cible and cible in df.columns:
+            data[cible] = df[cible]
+    else:
+        data = df[cols_brutes + ([cible] if cible and cible in df.columns else [])].copy()
+        for c in cols_brutes:
+            data[c] = _vers_numerique(data[c])
+        cols = cols_brutes
+
+    cols = cols[:max_vars]
+    data = data[cols + ([cible] if cible and cible in data.columns else [])].dropna()
     if len(data) < 20 or data[cols].shape[1] < 2:
         print("(Matrice de nuages : pas assez de données.)")
         return

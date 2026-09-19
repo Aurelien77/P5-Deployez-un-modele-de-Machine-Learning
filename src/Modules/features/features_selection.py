@@ -2,6 +2,9 @@
 Module du panneau de sélection interactive des variables (ON/OFF),
 groupées par type (linéaires, non-linéaires, qualitatives, booléennes,
 nouvelles features).
+
+Les unités (€, %, ans, 0/1, texte, niveau) viennent de new_features.py
+(source unique). Le panneau n'en redéfinit pas une deuxième copie.
 """
 from __future__ import annotations
 
@@ -29,22 +32,81 @@ GROUP_TITLES = {
     "nouvelles_features": "Nouvelles features",
 }
 
-FEATURES_METIER_PAR_DEFAUT = [
-    "ratio_anciennete_carriere",
-    "inertie_poste",
-    "stagnation_promotion",
-    "revenu_par_annee_experience",
-    "revenu_par_niveau",
-    "satisfaction_globale",
-    "satisfaction_globale_moyenne",
-    "satisfaction_min",
-    "delta_performance",
-    "montant_augmentation_precedente",
-    "hs_et_salaire_bas",
-    "jeune_faible_anciennete",
-    "trajet_long",
-    "job_hopper",
-]
+FEATURES_METIER_PAR_DEFAUT: list[str] | None = None  # ne plus coder en dur : voir _charger_features_metier()
+
+_SUFFIXE_VALUE = "_value"
+_CANDIDATS_NEW_FEATURES = (
+    "new_features",
+    "exploration.new_features",
+    "features.new_features",
+)
+
+
+# ---------------------------------------------------------------------------
+# Chargement dynamique (même contrat qu'avant)
+# ---------------------------------------------------------------------------
+
+def _importer_module_avec_attr(candidats: Sequence[str], attr: str, erreur_intro: str):
+    """Essaie une liste de chemins d'import et retourne l'attribut demandé."""
+    erreurs: list[str] = []
+    for nom in candidats:
+        try:
+            module = importlib.import_module(nom)
+        except Exception as exc:
+            erreurs.append(f"{nom} : {exc}")
+            continue
+        objet = getattr(module, attr, None)
+        if objet is not None:
+            return objet
+        erreurs.append(f"{nom} : pas de {attr}")
+    raise ImportError(erreur_intro + "\n- " + "\n- ".join(erreurs))
+
+
+def _charger_module_new_features():
+    erreurs: list[str] = []
+    for nom in _CANDIDATS_NEW_FEATURES:
+        try:
+            return importlib.import_module(nom)
+        except Exception as exc:
+            erreurs.append(f"{nom} : {exc}")
+    raise ImportError(
+        "new_features introuvable.\n- " + "\n- ".join(erreurs)
+    )
+
+
+def _charger_explications_features() -> dict[str, str]:
+    """Récupère EXPLICATIONS_FEATURES depuis new_features.py (plusieurs chemins)."""
+    explications = _importer_module_avec_attr(
+        _CANDIDATS_NEW_FEATURES,
+        "EXPLICATIONS_FEATURES",
+        "EXPLICATIONS_FEATURES introuvable (attendu dans new_features.py).",
+    )
+    if not isinstance(explications, dict):
+        raise ImportError("EXPLICATIONS_FEATURES n'est pas un dict.")
+    return dict(explications)
+
+
+def _charger_features_metier() -> list[str]:
+    """Récupère la liste à jour des features métier depuis EXPLICATIONS_FEATURES.
+
+    Lit directement le dictionnaire de new_features.py plutôt qu'une liste codée
+    en dur ici : dès qu'une feature est ajoutée / retirée / renommée là-bas,
+    ce panneau la reflète automatiquement, sans double maintenance ni risque
+    d'oubli (noms obsolètes, features manquantes...).
+    """
+    return list(_charger_explications_features().keys())
+
+
+def _charger_inferer_unite():
+    """Fonction d'unité définie dans new_features.py — pas de second dictionnaire ici."""
+    fn = _importer_module_avec_attr(
+        _CANDIDATS_NEW_FEATURES,
+        "inferer_unite",
+        "inferer_unite introuvable (attendu dans new_features.py).",
+    )
+    if not callable(fn):
+        raise ImportError("inferer_unite n'est pas appelable.")
+    return fn
 
 
 def _charger_classifier_et_detecter():
@@ -54,49 +116,184 @@ def _charger_classifier_et_detecter():
         "exploration.features",
         "features.exploration_y",
     )
-    erreurs = []
-    for nom in candidats:
-        try:
-            module = importlib.import_module(nom)
-        except Exception as exc:
-            erreurs.append(f"{nom} : {exc}")
-            continue
-        fn = getattr(module, "classifier_et_detecter", None)
-        if callable(fn):
-            return fn
-        erreurs.append(f"{nom} : pas de classifier_et_detecter")
-    raise ImportError(
-        "classifier_et_detecter introuvable (attendu dans exploration/exploration_y.py).\n- "
-        + "\n- ".join(erreurs)
+    fn = _importer_module_avec_attr(
+        candidats,
+        "classifier_et_detecter",
+        "classifier_et_detecter introuvable (attendu dans exploration/exploration_y.py).",
     )
+    if not callable(fn):
+        raise ImportError("classifier_et_detecter n'est pas appelable.")
+    return fn
 
+
+# ---------------------------------------------------------------------------
+# Noms de colonnes : base vs suffixe _value
+# ---------------------------------------------------------------------------
+
+def _nom_sans_value(nom: str) -> str:
+    if nom.endswith(_SUFFIXE_VALUE):
+        return nom[: -len(_SUFFIXE_VALUE)]
+    return nom
+
+
+def _variantes_nom(nom: str) -> list[str]:
+    """Nom canonique + variante *_value (ordre : tel quel, puis l'autre)."""
+    base = _nom_sans_value(nom)
+    variantes = [nom]
+    if nom.endswith(_SUFFIXE_VALUE):
+        if base not in variantes:
+            variantes.append(base)
+    else:
+        variantes.append(f"{nom}{_SUFFIXE_VALUE}")
+    if base not in variantes:
+        variantes.append(base)
+    return variantes
+
+
+def _colonne_reelle(df: pd.DataFrame, nom: str) -> str | None:
+    """Retourne le nom réellement présent dans df (gère le suffixe _value)."""
+    for candidat in _variantes_nom(nom):
+        if candidat in df.columns:
+            return candidat
+    return None
+
+
+def _resoudre_features_dans_df(df: pd.DataFrame, features: Sequence[str]) -> list[str]:
+    """Mappe une liste de noms métier vers les colonnes réellement présentes."""
+    resolues: list[str] = []
+    vus: set[str] = set()
+    for nom in features:
+        reel = _colonne_reelle(df, nom)
+        if reel is not None and reel not in vus:
+            resolues.append(reel)
+            vus.add(reel)
+    return resolues
+
+
+# ---------------------------------------------------------------------------
+# Unités et libellés d'affichage (délègue à new_features)
+# ---------------------------------------------------------------------------
+
+def _unite_colonne(nom: str, unites_df: Mapping[str, str] | None = None) -> str:
+    if unites_df:
+        if nom in unites_df:
+            return unites_df[nom]
+        base = _nom_sans_value(nom)
+        if base in unites_df:
+            return unites_df[base]
+    try:
+        inferer_unite = _charger_inferer_unite()
+        return inferer_unite(nom) or ""
+    except Exception:
+        return ""
+
+
+def _libelle_bouton(allume: bool, nom: str, unites_df: Mapping[str, str] | None = None) -> str:
+    prefixe = "ON" if allume else "OFF"
+    unite = _unite_colonne(nom, unites_df)
+    suffixe = f"  [{unite}]" if unite else ""
+    return f"{prefixe} : {nom}{suffixe}"
+
+
+def _tooltip_variable(
+    nom: str,
+    explications: Mapping[str, str] | None,
+    unites_df: Mapping[str, str] | None = None,
+) -> str:
+    base = _nom_sans_value(nom)
+    expl = ""
+    if explications:
+        expl = explications.get(nom) or explications.get(base) or ""
+    unite = _unite_colonne(nom, unites_df)
+    parties = [nom]
+    if nom.endswith(_SUFFIXE_VALUE):
+        parties.append("colonne numérique (_value) extraite du texte source")
+    if unite:
+        parties.append(f"unité : {unite}")
+    if expl:
+        parties.append(expl)
+    return " — ".join(parties)
+
+
+def _unites_depuis_df(df: pd.DataFrame) -> dict[str, str]:
+    try:
+        module = _charger_module_new_features()
+        fn = getattr(module, "unites_du_dataframe", None)
+        if callable(fn):
+            return dict(fn(df))
+    except Exception:
+        pass
+    stockees = dict(df.attrs.get("unites_colonnes", {}) or {})
+    try:
+        inferer_unite = _charger_inferer_unite()
+    except Exception:
+        return stockees
+    for col in df.columns:
+        if col not in stockees:
+            unite = inferer_unite(col)
+            if unite:
+                stockees[col] = unite
+    return stockees
+
+
+# ---------------------------------------------------------------------------
+# Classification des groupes
+# ---------------------------------------------------------------------------
 
 def _preparer_classification(
     df_clean: pd.DataFrame,
     target_col: str,
     classification: Mapping[str, list[str]] | None,
-    features_metier: Sequence[str],
+    features_metier: Sequence[str] | None,
 ) -> dict[str, list[str]]:
-    """Récupère (ou calcule) la classification et isole les features métier à part."""
+    """Récupère (ou calcule) la classification et isole les features métier à part.
+
+    Les features métier sont résolues vers le nom réel dans df_clean
+    (avec ou sans suffixe _value) pour que le bouton correspond toujours
+    à une colonne existante.
+    """
+    if features_metier is None:
+        features_metier = _charger_features_metier()
     if classification is None:
         classifier_et_detecter = _charger_classifier_et_detecter()
         classification = classifier_et_detecter(df_clean, target_col)
     classification = {k: list(v) for k, v in classification.items()}
-    features_existantes = [f for f in features_metier if f in df_clean.columns]
+
+    features_existantes = _resoudre_features_dans_df(df_clean, features_metier)
+    aliases_metier = set()
+    for f in features_existantes:
+        aliases_metier.update(_variantes_nom(f))
+        aliases_metier.add(_nom_sans_value(f))
+
     for k in classification:
-        classification[k] = [v for v in classification[k] if v not in features_existantes]
+        classification[k] = [v for v in classification[k] if v not in aliases_metier]
     classification["nouvelles_features"] = features_existantes
     return classification
 
+
+# ---------------------------------------------------------------------------
+# Panneau ON / OFF
+# ---------------------------------------------------------------------------
 
 def creer_panneau_selection(
     df_clean: pd.DataFrame,
     target_col: str = "a_quitte_l_entreprise",
     classification: Mapping[str, list[str]] | None = None,
-    features_metier: Sequence[str] = FEATURES_METIER_PAR_DEFAUT,
+    features_metier: Sequence[str] | None = None,
 ) -> dict[str, list[tuple[str, widgets.ToggleButton]]]:
-    """Construit et affiche le panneau de sélection ON/OFF des variables."""
+    """Construit et affiche le panneau de sélection ON/OFF des variables.
+
+    Chaque bouton affiche le nom de colonne + un suffixe d'unité
+    (ex. « ON : performance  [niveau] », « ON : departement  [texte] »).
+    Le tooltip reprend l'explication métier quand elle existe.
+    """
     classification = _preparer_classification(df_clean, target_col, classification, features_metier)
+    try:
+        explications = _charger_explications_features()
+    except Exception:
+        explications = {}
+    unites_df = _unites_depuis_df(df_clean)
+
     var_buttons: dict[str, list[tuple[str, widgets.ToggleButton]]] = {}
     ui_blocks: list[widgets.VBox] = []
 
@@ -115,18 +312,19 @@ def creer_panneau_selection(
         for var in classification[group_key]:
             t_btn = widgets.ToggleButton(
                 value=True,
-                description=f"ON : {var}",
+                description=_libelle_bouton(True, var, unites_df),
                 button_style="success",
+                tooltip=_tooltip_variable(var, explications, unites_df),
                 layout=widgets.Layout(width="auto", margin="2px"),
             )
 
             def make_toggle_observer(btn, variable_name):
                 def on_change(change):
                     if change["new"]:
-                        btn.description = f"ON : {variable_name}"
+                        btn.description = _libelle_bouton(True, variable_name, unites_df)
                         btn.button_style = "success"
                     else:
-                        btn.description = f"OFF : {variable_name}"
+                        btn.description = _libelle_bouton(False, variable_name, unites_df)
                         btn.button_style = ""
 
                 return on_change
@@ -162,6 +360,16 @@ def creer_panneau_selection(
                 widgets.HTML(
                     "<h3>Panneau de contrôle ON / OFF</h3>"
                     "<p>Choisis les variables, puis lance l’évaluation dans la cellule suivante.</p>"
+                    "<p style='color:#555;font-size:90%'>"
+                    "Suffixe = unité : "
+                    "<code>€</code> montant, "
+                    "<code>%</code> ratio / taux, "
+                    "<code>ans</code> durée, "
+                    "<code>0/1</code> binaire, "
+                    "<code>texte</code> catégorie, "
+                    "<code>niveau</code> échelle (note, fréquence, participation, perf). "
+                    "Survole un bouton pour l’explication métier."
+                    "</p>"
                 ),
                 *ui_blocks,
             ]
@@ -174,7 +382,11 @@ def obtenir_variables_selectionnees(
     var_buttons: Mapping[str, list[tuple[str, widgets.ToggleButton]]],
     par_groupe: bool = False,
 ):
-    """Lit l'état actuel des ToggleButton et retourne les variables cochées ON."""
+    """Lit l'état actuel des ToggleButton et retourne les variables cochées ON.
+
+    Les noms renvoyés sont ceux réellement présents dans le DataFrame
+    (donc avec le suffixe _value s'il est sur la colonne utilisée).
+    """
     if par_groupe:
         return {
             groupe: [var for var, btn in paires if btn.value]
@@ -191,7 +403,7 @@ def bouton_features_selection(
     on_demarrer_callback=None,
     target_col: str = "a_quitte_l_entreprise",
     classification: Mapping[str, list[str]] | None = None,
-    features_metier: Sequence[str] = FEATURES_METIER_PAR_DEFAUT,
+    features_metier: Sequence[str] | None = None,
     on_panel_ready_callback: Callable[
         [Mapping[str, list[tuple[str, widgets.ToggleButton]]]], None
     ]

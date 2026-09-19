@@ -8,6 +8,8 @@ prédiction de l'attrition (a_quitte_l_entreprise) :
 - distribution_probabilites_par_type()     : distribution des probabilités prédites par modèle
 - comparer_train_test()                    : graphique en barres horizontales Train (CV) vs Test
 - importance_permutation()                 : classement des variables par importance (permutation importance)
+- tracer_beeswarm_shap()                   : graphique Beeswarm SHAP (vue globale)
+- tracer_shap_local()                      : graphique SHAP local (waterfall/force, une observation)
 - analyser_distribution_erreurs()          : distribution globale des erreurs (histogramme & KDE)
 - afficher_grille_true_vs_pred()           : grille intelligente de graphiques True vs Predicted
 - importance_permutation_avec_erreur()     : permutation importance avec écart-type et affichage tabulaire
@@ -19,7 +21,7 @@ prédiction de l'attrition (a_quitte_l_entreprise) :
 - tracer_courbe_apprentissage()            : learning curve (score Train vs CV selon taille échantillon) + verdict auto
 - analyser_seuil_optimal()                 : Precision / Recall / F1 en fonction du seuil de décision
 - diagnostiquer_overfitting_tableau()      : tableau récapitulatif Overfitting / Underfitting / Bien équilibré, tous modèles
-- interface_etude_modeles_etape()          : interface interactive à 7 onglets avec choix Train/Test
+- interface_etude_modeles_etape()          : interface interactive à 8 onglets avec choix Train/Test
 
 Toutes les fonctions prennent le pipeline/modèle en paramètre explicite
 (jamais de variable globale implicite), pour éviter les erreurs de type
@@ -34,15 +36,19 @@ from matplotlib.lines import Line2D
 import seaborn as sns
 from scipy import stats
 from sklearn.inspection import permutation_importance
+from sklearn.base import clone
+from sklearn.model_selection import learning_curve, cross_val_predict, StratifiedKFold
 from sklearn.metrics import (
     confusion_matrix, roc_curve, auc, precision_recall_curve,
     average_precision_score, precision_score, recall_score, f1_score,
 )
 from sklearn.calibration import calibration_curve
-from sklearn.model_selection import learning_curve
 from IPython.display import display, clear_output
 import ipywidgets as widgets
 from collections import OrderedDict
+
+# Importation de SHAP pour le graphique Beeswarm
+import shap
 
 # Réutilise la catégorisation des modèles définie dans model.py si le module
 # est disponible dans le même package ; sinon, on retombe sur une copie locale
@@ -154,6 +160,7 @@ except ImportError:
 
         return conteneur, get_selection
 
+
 # ----------------------------------------------------------------------
 # 1. Analyse des résidus
 # ----------------------------------------------------------------------
@@ -165,7 +172,6 @@ def analyser_residus(modele, X_test, y_test, nom_modele=None):
     X_test_aligned = X_test.loc[common_idx]
     y_test_aligned = y_test.loc[common_idx]
 
-    # Gestion sécurisée pour les modèles sans predict_proba (ex: RidgeClassifier)
     if hasattr(modele, "predict_proba"):
         y_pred_proba = modele.predict_proba(X_test_aligned)[:, 1]
         label_y_axe = "Résidus (y_réel - proba)"
@@ -250,10 +256,6 @@ def analyser_residus(modele, X_test, y_test, nom_modele=None):
 # 2. Distribution des probabilités par type de prédiction
 # ----------------------------------------------------------------------
 def distribution_probabilites_par_type(fitted_pipelines, df_res, X_train, y_train, X_test, y_test, threshold=0.5, nom_modele=None):
-    """
-    Affiche la distribution des probabilités prédites en séparant les 4 catégories (TN, FP, FN, TP)
-    à la fois pour le jeu d'entraînement (Train) et le jeu de test (Test) pour chaque modèle.
-    """
     if isinstance(nom_modele, str):
         nom_modele = [nom_modele]
     elif nom_modele is None:
@@ -323,7 +325,6 @@ def distribution_probabilites_par_type(fitted_pipelines, df_res, X_train, y_trai
             )
             
             ax.axvline(x=threshold, color='red', linestyle='--', label=f'Seuil ({threshold})')
-            
             ax.set_title(f"Distribution des probabilités [{dataset_name}] — {name}")
             ax.set_xlabel("Probabilité prédite de la classe positive")
             ax.set_ylabel("Effectif")
@@ -338,12 +339,12 @@ def distribution_probabilites_par_type(fitted_pipelines, df_res, X_train, y_trai
             ]
             
             ax.legend(handles=legend_elements, loc='upper right')
-            
             plt.tight_layout()
             plt.show()
 
+
 # ----------------------------------------------------------------------
-# 3. Comparaison Train (CV) vs Test (Filtré sur le Top N)
+# 3. Comparaison Train (CV) vs Test
 # ----------------------------------------------------------------------
 def comparer_train_test(
     df_res,
@@ -357,16 +358,6 @@ def comparer_train_test(
     seuil_overfitting=0.05,
     seuil_score_faible=0.65,
 ):
-    """
-    Compare 3 scores par modèle :
-    - Train (résubstitution) : évalué sur les données mêmes qui ont servi à l'entraînement -> optimiste
-    - CV : moyenne des scores de validation croisée -> bonne estimation de généralisation
-    - Test : score sur le jeu de test jamais vu -> estimation finale
-
-    Un grand écart (Train >> CV/Test) = surapprentissage (overfitting).
-    Des scores faibles partout (Train ET Test) = sous-apprentissage (underfitting).
-    Des scores proches et élevés = modèle bien équilibré.
-    """
     if top_model_names is not None:
         df_plot = df_res.loc[df_res.index.intersection(top_model_names)]
         df_plot = df_plot.reindex([m for m in top_model_names if m in df_plot.index])
@@ -386,7 +377,6 @@ def comparer_train_test(
     ax.barh(y_pos - hauteur, df_plot[col_test], height=hauteur,
             color='seagreen', edgecolor='black', label='Test')
 
-    # Annotation du diagnostic à droite de chaque groupe de barres
     for i, modele in enumerate(modeles):
         train_score = df_plot.loc[modele, col_train]
         cv_score = df_plot.loc[modele, col_cv]
@@ -420,14 +410,6 @@ def comparer_train_test(
 
     plt.tight_layout()
     plt.show()
-
-    print(
-        f"Lecture : ΔCV = Train - CV (signal principal de surapprentissage), "
-        f"ΔTest = Train - Test (confirmation sur le split final). "
-        f"Écart > {seuil_overfitting:.2f} → surapprentissage. "
-        f"Scores < {seuil_score_faible:.2f} partout → sous-apprentissage. "
-        f"Écarts proches de 0 avec scores élevés → bon équilibre."
-    )
 
 
 # ----------------------------------------------------------------------
@@ -526,7 +508,139 @@ def plot_importance_grille(importances_pivot, top_n=15, ncols=2, scoring='f1', t
 
 
 # ----------------------------------------------------------------------
-# 6. Distribution globale des erreurs
+# 6. Graphique Beeswarm SHAP (Nouveau)
+# ----------------------------------------------------------------------
+def _calculer_shap_values(pipeline, X_eval, nom_modele="Modèle"):
+    """
+    Fonction interne partagée : calcule les valeurs SHAP pour un pipeline donné.
+    Retourne (shap_values, X_transforme, feature_names) en gérant le cas
+    multi-classes (shape à 3 dimensions -> on garde la classe positive).
+    Utilisée à la fois par tracer_beeswarm_shap() (vue globale) et
+    tracer_shap_local() (vue locale, par observation).
+    """
+    print(f"Calcul des valeurs SHAP ({nom_modele})...")
+
+    if hasattr(pipeline, "named_steps"):
+        preprocessor = pipeline.named_steps.get('preprocessor', None)
+        model = pipeline.named_steps.get('classifier', pipeline.named_steps.get('model', list(pipeline.named_steps.values())[-1]))
+
+        if preprocessor is not None:
+            X_transforme = preprocessor.transform(X_eval)
+            try:
+                feature_names = preprocessor.get_feature_names_out()
+            except Exception:
+                feature_names = [f"feat_{i}" for i in range(X_transforme.shape[1])]
+        else:
+            X_transforme = X_eval
+            feature_names = X_eval.columns
+    else:
+        model = pipeline
+        X_transforme = X_eval
+        feature_names = X_eval.columns if hasattr(X_eval, "columns") else None
+
+    background = shap.sample(X_transforme, min(100, X_transforme.shape[0])) if hasattr(X_transforme, "shape") else X_transforme[:100]
+
+    if hasattr(model, "predict_proba"):
+        # Modèles avec sortie probabiliste (arbres, régression logistique, SVC(probability=True), etc.)
+        explainer = shap.Explainer(model.predict_proba, background)
+        shap_values = explainer(X_transforme)
+    elif hasattr(model, "feature_importances_") or type(model).__name__ in (
+        "RandomForestClassifier", "GradientBoostingClassifier", "XGBClassifier",
+        "LGBMClassifier", "CatBoostClassifier", "ExtraTreesClassifier", "DecisionTreeClassifier",
+    ):
+        # Modèles à base d'arbres sans predict_proba exposée directement
+        explainer = shap.TreeExplainer(model)
+        shap_values = explainer(X_transforme)
+    elif hasattr(model, "coef_"):
+        # Modèles linéaires sans predict_proba (ex: LinearSVC, LinearSVR, SGDClassifier sans "log_loss")
+        try:
+            explainer = shap.LinearExplainer(model, background)
+        except Exception:
+            explainer = shap.Explainer(model.decision_function if hasattr(model, "decision_function") else model.predict, background)
+        shap_values = explainer(X_transforme)
+    else:
+        # Dernier recours : explication basée uniquement sur predict()
+        explainer = shap.Explainer(model.predict, background)
+        shap_values = explainer(X_transforme)
+
+    if len(shap_values.values.shape) == 3:
+        # Cas multi-classes (ou proba à 2 colonnes) : on ne garde que la classe positive (1)
+        shap_values = shap_values[..., 1]
+
+    return shap_values, X_transforme, feature_names
+
+
+def tracer_beeswarm_shap(pipeline, X_eval, nom_modele="Modèle", max_display=15):
+    """
+    Génère un graphique Beeswarm SHAP pour visualiser l'impact global
+    de chaque variable sur les prédictions du modèle (vue d'ensemble,
+    toutes observations superposées).
+    """
+    try:
+        shap_values, X_transforme, feature_names = _calculer_shap_values(pipeline, X_eval, nom_modele)
+
+        plt.figure(figsize=(10, 6))
+        shap.summary_plot(shap_values.values, X_transforme, feature_names=feature_names, max_display=max_display, show=False)
+
+        plt.title(f"Graphique Beeswarm SHAP — {nom_modele}", fontsize=12, fontweight='bold', pad=15)
+        plt.tight_layout()
+        plt.show()
+    except Exception as e:
+        print(f"❌ Échec de la génération SHAP ({nom_modele}) : {e}")
+
+
+def tracer_shap_local(pipeline, X_eval, index=0, nom_modele="Modèle", max_display=15, type_graphique="waterfall"):
+    """
+    Génère une explication SHAP LOCALE, c'est-à-dire pour une seule observation
+    (une ligne de X_eval), identifiée par sa position `index`.
+
+    Complémentaire au beeswarm (vue globale) : ici on répond à la question
+    "pourquoi le modèle a-t-il pris CETTE décision pour CET individu ?".
+
+    Paramètres
+    ----------
+    index : int ou list[int]
+        Position(s) de la ou des observation(s) à expliquer dans X_eval.
+        Un seul index -> waterfall (ou force plot). Une liste -> force plot
+        empilé sur plusieurs observations.
+    type_graphique : "waterfall" ou "force"
+    """
+    try:
+        shap_values, X_transforme, feature_names = _calculer_shap_values(pipeline, X_eval, nom_modele)
+
+        if isinstance(index, (list, tuple, np.ndarray)):
+            # Plusieurs observations à la fois -> force plot empilé
+            shap.force_plot(
+                shap_values.base_values[index[0]] if np.ndim(shap_values.base_values) > 0 else shap_values.base_values,
+                shap_values.values[index],
+                X_transforme[index] if hasattr(X_transforme, "__getitem__") else None,
+                feature_names=feature_names,
+                matplotlib=True,
+                show=False,
+            )
+            plt.title(f"SHAP local (observations {list(index)}) — {nom_modele}", fontsize=12, fontweight='bold', pad=15)
+            plt.tight_layout()
+            plt.show()
+            return
+
+        # Une seule observation
+        obs = shap_values[index]
+
+        plt.figure(figsize=(10, 6))
+        if type_graphique == "force":
+            shap.force_plot(obs.base_values, obs.values, obs.data, feature_names=feature_names, matplotlib=True, show=False)
+        else:
+            shap.plots.waterfall(obs, max_display=max_display, show=False)
+
+        plt.title(f"SHAP local (observation n°{index}) — {nom_modele}", fontsize=12, fontweight='bold', pad=15)
+        plt.tight_layout()
+        plt.show()
+    except Exception as e:
+        print(f"❌ Échec de la génération SHAP locale ({nom_modele}) : {e}")
+
+
+# ----------------------------------------------------------------------
+# 7. Distribution globale des erreurs
 # ----------------------------------------------------------------------
 def analyser_distribution_erreurs(modele, X_test, y_test, nom_modele=None):
     if nom_modele:
@@ -562,7 +676,7 @@ def analyser_distribution_erreurs(modele, X_test, y_test, nom_modele=None):
 
 
 # ----------------------------------------------------------------------
-# 7. Importance des variables par permutation (jeu de test, avec écart-type)
+# 8. Importance des variables par permutation (jeu de test, avec écart-type)
 # ----------------------------------------------------------------------
 def importance_permutation_avec_erreur(
     pipeline, X_test, y_test, nom_modele=None,
@@ -602,10 +716,9 @@ def importance_permutation_avec_erreur(
 
 
 # ----------------------------------------------------------------------
-# 8. Matrice de confusion
+# 9. Matrice de confusion
 # ----------------------------------------------------------------------
 def afficher_matrice_confusion(y_true, y_pred, nom_modele="Modèle"):
-    """Affiche la matrice de confusion sous forme de heatmap seaborn."""
     cm = confusion_matrix(y_true, y_pred)
     plt.figure(figsize=(6, 5))
     sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", cbar=False)
@@ -618,7 +731,7 @@ def afficher_matrice_confusion(y_true, y_pred, nom_modele="Modèle"):
 
 
 # ----------------------------------------------------------------------
-# 9. Grille intelligente de probabilités prédites vs Réalité (Classification)
+# 10. Grille intelligente de probabilités prédites vs Réalité
 # ----------------------------------------------------------------------
 def afficher_grille_true_vs_pred(
     fitted_pipelines, top_model_names, X_test, y_test,
@@ -634,7 +747,6 @@ def afficher_grille_true_vs_pred(
         nrows=nrows, ncols=ncols,
         figsize=(figsize_par_case[0] * ncols, figsize_par_case[1] * nrows)
     )
-    
     axes = np.atleast_1d(axes).ravel()
 
     for i, nom_modele in enumerate(top_model_names):
@@ -671,8 +783,6 @@ def afficher_grille_true_vs_pred(
         ax.set_xticks([0, 1])
         ax.legend(fontsize=8, loc="upper left")
         ax.grid(True, linestyle=":", alpha=0.5)
-        ax.text(0.5, threshold + 0.03, "prédit 1", color="darkorange", ha="center", fontsize=8)
-        ax.text(0.5, threshold - 0.07, "prédit 0", color="steelblue", ha="center", fontsize=8)
 
     for j in range(n_plots, len(axes)):
         axes[j].axis("off")
@@ -681,16 +791,9 @@ def afficher_grille_true_vs_pred(
 
 
 # ----------------------------------------------------------------------
-# 10. Analyse des corrélations (Pearson & Spearman) et Pairplot
+# 11. Analyse des corrélations (Pearson & Spearman) et Pairplot
 # ----------------------------------------------------------------------
 def analyser_correlations_features(X, seuil_pearson=0.85):
-    """
-    Calcule et affiche :
-    1. La matrice de corrélation de Pearson pour détecter/éliminer les fortes corrélations linéaires.
-    2. Une liste de paires de features fortement corrélées (linéairement).
-    3. La matrice de corrélation de Spearman pour les relations non-linéaires.
-    4. Un pairplot pour visualiser l'intensité des corrélations.
-    """
     print("--- 1. Analyse de la corrélation de Pearson (Linéaire) ---")
     corr_pearson = X.select_dtypes(include=[np.number]).corr(method='pearson')
     
@@ -700,7 +803,6 @@ def analyser_correlations_features(X, seuil_pearson=0.85):
     plt.tight_layout()
     plt.show()
 
-    # Identification des paires fortement corrélées selon le seuil
     hautes_corrs = []
     columns = corr_pearson.columns
     for i in range(len(columns)):
@@ -710,7 +812,7 @@ def analyser_correlations_features(X, seuil_pearson=0.85):
                 hautes_corrs.append((columns[i], columns[j], val))
                 
     if hautes_corrs:
-        print(f"⚠️ Paires avec une corrélation linéaire |r| >= {seuil_pearson} à envisager d'éliminer :")
+        print(f"⚠️ Paires avec une corrélation linéaire |r| >= {seuil_pearson} :")
         for f1, f2, val in hautes_corrs:
             print(f"   - {f1} <--> {f2} : {val:.3f}")
     else:
@@ -726,15 +828,12 @@ def analyser_correlations_features(X, seuil_pearson=0.85):
     plt.show()
 
     print("\n--- 3. Tracé du Pairplot ---")
-    print("(Note : Si le nombre de variables est très élevé, le pairplot peut être restreint aux variables les plus importantes)")
-    
     cols_a_tracer = X.select_dtypes(include=[np.number]).columns
     if len(cols_a_tracer) > 6:
-        print("Information : Plus de 6 variables détectées, affichage du pairplot sur les 6 premières colonnes numériques par souci de lisibilité.")
         cols_a_tracer = cols_a_tracer[:6]
 
     sns.pairplot(X[cols_a_tracer], diag_kind='kde', corner=True)
-    plt.suptitle("Pairplot des features (intensités des relations non-linéaires)", y=1.02)
+    plt.suptitle("Pairplot des features", y=1.02)
     plt.show()
 
     return corr_pearson, corr_spearman
@@ -753,14 +852,9 @@ def _get_probas(pipeline, X):
 
 
 # ----------------------------------------------------------------------
-# 11. Courbe ROC (plusieurs modèles superposés)
+# 12. Courbe ROC
 # ----------------------------------------------------------------------
 def tracer_courbe_roc(fitted_pipelines, X, y, model_names=None, figsize=(7, 6)):
-    """
-    Trace les courbes ROC de un ou plusieurs modèles sur le même graphique.
-    Complète le ROC_AUC_test déjà calculé en montrant la forme de la courbe
-    (et pas seulement l'aire sous la courbe).
-    """
     if model_names is None:
         model_names = list(fitted_pipelines.keys())
 
@@ -783,14 +877,9 @@ def tracer_courbe_roc(fitted_pipelines, X, y, model_names=None, figsize=(7, 6)):
 
 
 # ----------------------------------------------------------------------
-# 12. Courbe Precision-Recall (plusieurs modèles superposés, avec baseline)
+# 13. Courbe Precision-Recall
 # ----------------------------------------------------------------------
 def tracer_courbe_precision_recall(fitted_pipelines, X, y, model_names=None, figsize=(7, 6)):
-    """
-    Trace les courbes Precision-Recall — plus informatives que la ROC quand
-    la classe positive (les départs) est minoritaire, ce qui est typiquement
-    le cas pour l'attrition.
-    """
     if model_names is None:
         model_names = list(fitted_pipelines.keys())
 
@@ -816,16 +905,9 @@ def tracer_courbe_precision_recall(fitted_pipelines, X, y, model_names=None, fig
 
 
 # ----------------------------------------------------------------------
-# 13. Courbe de calibration (reliability diagram)
+# 14. Courbe de calibration
 # ----------------------------------------------------------------------
 def tracer_courbe_calibration(fitted_pipelines, X, y, model_names=None, n_bins=10, figsize=(7, 6)):
-    """
-    Vérifie si les probabilités prédites reflètent la réalité (ex : parmi
-    les personnes pour lesquelles le modèle prédit 70% de risque de départ,
-    est-ce qu'environ 70% partent réellement ?). Important si les
-    probabilités sont utilisées pour prioriser des actions RH plutôt que
-    la seule classe 0/1.
-    """
     if model_names is None:
         model_names = list(fitted_pipelines.keys())
 
@@ -839,7 +921,7 @@ def tracer_courbe_calibration(fitted_pipelines, X, y, model_names=None, n_bins=1
     plt.plot([0, 1], [0, 1], 'k--', alpha=0.5, label="Calibration parfaite")
     plt.xlabel("Probabilité moyenne prédite")
     plt.ylabel("Fréquence réelle observée")
-    plt.title("Courbe de calibration (reliability diagram)")
+    plt.title("Courbe de calibration")
     plt.legend(fontsize=8, loc="upper left")
     plt.grid(True, linestyle=":", alpha=0.4)
     plt.tight_layout()
@@ -847,25 +929,13 @@ def tracer_courbe_calibration(fitted_pipelines, X, y, model_names=None, n_bins=1
 
 
 # ----------------------------------------------------------------------
-# 14. Courbe d'apprentissage (learning curve)
+# 15. Courbe d'apprentissage
 # ----------------------------------------------------------------------
 def tracer_courbe_apprentissage(
     pipeline, X, y, cv=5, scoring='roc_auc',
     train_sizes=np.linspace(0.1, 1.0, 8), nom_modele=None, n_jobs=-1,
     seuil_overfitting=0.05, seuil_score_faible=0.65,
 ):
-    """
-    Montre l'évolution du score Train et du score CV selon la taille de
-    l'échantillon d'entraînement.
-
-    Comment lire cette courbe :
-    - Les deux courbes restent basses et proches -> sous-apprentissage
-      (le modèle est trop simple, plus de données n'aidera pas ; il faut
-      un modèle plus complexe ou de meilleures features).
-    - Écart large et persistant entre Train (haut) et CV (bas) -> surapprentissage
-      (le modèle mémorise ; régulariser, simplifier, ou ajouter des données peut aider).
-    - Les deux courbes convergent vers un score élevé -> bon équilibre.
-    """
     train_sizes_abs, train_scores, test_scores = learning_curve(
         pipeline, X, y, cv=cv, scoring=scoring,
         train_sizes=train_sizes, n_jobs=n_jobs,
@@ -876,13 +946,13 @@ def tracer_courbe_apprentissage(
     ecart_final = train_mean[-1] - test_mean[-1]
 
     if train_mean[-1] < seuil_score_faible and test_mean[-1] < seuil_score_faible:
-        verdict = "Sous-apprentissage (scores faibles même sur le train)"
+        verdict = "Sous-apprentissage"
         couleur_verdict = "darkorange"
     elif ecart_final > seuil_overfitting:
-        verdict = "Surapprentissage (le Train reste nettement au-dessus du CV)"
+        verdict = "Surapprentissage"
         couleur_verdict = "crimson"
     else:
-        verdict = "Bien équilibré (les courbes convergent)"
+        verdict = "Bien équilibré"
         couleur_verdict = "forestgreen"
 
     plt.figure(figsize=(8.5, 5.5))
@@ -893,17 +963,9 @@ def tracer_courbe_apprentissage(
     plt.fill_between(train_sizes_abs, test_mean - test_std, test_mean + test_std,
                       alpha=0.15, color='darkorange')
 
-    # Zone verticale hachurée entre les deux courbes au dernier point = écart final visible
     plt.vlines(train_sizes_abs[-1], test_mean[-1], train_mean[-1],
                color=couleur_verdict, linestyle=':', linewidth=2)
-    plt.annotate(
-        f"Δ final = {ecart_final:+.3f}",
-        xy=(train_sizes_abs[-1], (train_mean[-1] + test_mean[-1]) / 2),
-        xytext=(-90, 0), textcoords='offset points',
-        color=couleur_verdict, fontsize=9, fontweight='bold',
-        arrowprops=dict(arrowstyle='-', color=couleur_verdict, alpha=0.6),
-    )
-
+    
     titre = f"Courbe d'apprentissage — {nom_modele}" if nom_modele else "Courbe d'apprentissage"
     plt.title(titre)
     plt.xlabel("Taille de l'échantillon d'entraînement")
@@ -915,28 +977,16 @@ def tracer_courbe_apprentissage(
     plt.tight_layout()
     plt.show()
 
-    print(f"Score Train final : {train_mean[-1]:.3f} | Score CV final : {test_mean[-1]:.3f} | "
-          f"Écart Δ : {ecart_final:+.3f}")
-    print(f"Diagnostic : {verdict}")
-
 
 # ----------------------------------------------------------------------
-# 15. Analyse du seuil optimal de décision
+# 16. Analyse du seuil optimal de décision
 # ----------------------------------------------------------------------
 def analyser_seuil_optimal(pipeline, X_test, y_test, nom_modele="Modèle"):
-    """
-    Trace l'évolution de la précision, du rappel et du F1-score en fonction
-    du seuil de décision pour identifier le seuil idéal.
-    """
     y_proba = _get_probas(pipeline, X_test)
     precisions, rappels, seuils = precision_recall_curve(y_test, y_proba)
-    
-    # Éviter la division par zéro
     f1_scores = 2 * (precisions * rappels) / (precisions + rappels + 1e-10)
     
-    # Le dernier élément de seuils est vide dans precision_recall_curve
     seuils_complets = np.append(seuils, 1.0)
-    
     best_idx = np.argmax(f1_scores)
     best_seuil = seuils_complets[best_idx]
     best_f1 = f1_scores[best_idx]
@@ -945,7 +995,6 @@ def analyser_seuil_optimal(pipeline, X_test, y_test, nom_modele="Modèle"):
     plt.plot(seuils_complets, precisions, label="Précision", color="blue")
     plt.plot(seuils_complets, rappels, label="Rappel", color="orange")
     plt.plot(seuils_complets, f1_scores, label="F1-score", color="green", linestyle="--")
-    
     plt.axvline(best_seuil, color='red', linestyle=':', label=f"Seuil optimal (F1={best_f1:.3f}) : {best_seuil:.2f}")
     
     plt.xlabel("Seuil de décision")
@@ -956,17 +1005,13 @@ def analyser_seuil_optimal(pipeline, X_test, y_test, nom_modele="Modèle"):
     plt.tight_layout()
     plt.show()
 
-    print(f"Seuil optimal recommandé pour {nom_modele} : {best_seuil:.2f} (F1-score max = {best_f1:.4f})")
     return best_seuil
 
 
 # ----------------------------------------------------------------------
-# 16. Tableau récapitulatif du diagnostic d'Overfitting / Underfitting
+# 17. Tableau récapitulatif du diagnostic d'Overfitting / Underfitting
 # ----------------------------------------------------------------------
 def diagnostiquer_overfitting_tableau(df_res, col_train='ROC_AUC_train', col_cv='ROC_AUC_cv', seuil_overfit=0.05):
-    """
-    Génère un tableau de diagnostic récapitulatif pour l'ensemble des modèles évalués.
-    """
     df_diag = df_res.copy()
     if col_train in df_diag.columns and col_cv in df_diag.columns:
         df_diag['Ecart_Train_CV'] = df_diag[col_train] - df_diag[col_cv]
@@ -986,11 +1031,55 @@ def diagnostiquer_overfitting_tableau(df_res, col_train='ROC_AUC_train', col_cv=
 
 
 # ----------------------------------------------------------------------
-# 17. Interface interactive globale (7 onglets)
+# 18. Interface interactive globale (8 onglets incluant le Beeswarm SHAP)
 # ----------------------------------------------------------------------
-def interface_etude_modeles_etape():
-    """Crée l'interface complète avec 7 onglets et un choix Train/Test pour l'analyse approfondie."""
+class _PipelineEvalCV:
+    """
+    Proxy « CV » : se comporte comme un pipeline entraîné (mêmes méthodes
+    predict / predict_proba), mais renvoie des prédictions Out-Of-Fold
+    (validation croisée, non biaisées) quand on l'appelle sur exactement
+    X_train — le même objet que celui utilisé pour construire ce proxy.
 
+    Pour toute autre matrice (ex: colonnes permutées par permutation_importance,
+    ou données de test), il délègue simplement au pipeline réellement entraîné
+    sur l'ensemble Train complet. Toute autre attribut (named_steps, coef_...)
+    est aussi délégué au pipeline réel.
+    """
+    def __init__(self, pipeline_fit, X_train, y_train, cv=5, random_state=42):
+        self._pipeline_fit = pipeline_fit
+        self._X_train_ref = X_train
+        cv_split = StratifiedKFold(n_splits=cv, shuffle=True, random_state=random_state)
+
+        self._y_pred_oof = cross_val_predict(clone(pipeline_fit), X_train, y_train, cv=cv_split)
+
+        self._y_proba_oof = None
+        if hasattr(pipeline_fit, "predict_proba"):
+            try:
+                self._y_proba_oof = cross_val_predict(
+                    clone(pipeline_fit), X_train, y_train, cv=cv_split, method="predict_proba"
+                )
+            except Exception:
+                self._y_proba_oof = None
+
+    def predict(self, X):
+        if X is self._X_train_ref:
+            return self._y_pred_oof
+        return self._pipeline_fit.predict(X)
+
+    def predict_proba(self, X):
+        if X is self._X_train_ref and self._y_proba_oof is not None:
+            return self._y_proba_oof
+        return self._pipeline_fit.predict_proba(X)
+
+    def score(self, X, y):
+        return self._pipeline_fit.score(X, y)
+
+    def __getattr__(self, name):
+        # Délègue tout le reste (named_steps, coef_, get_params, etc.) au pipeline réel
+        return getattr(self._pipeline_fit, name)
+
+
+def interface_etude_modeles_etape():
     import sys
     main_ns = sys.modules['__main__'].__dict__
 
@@ -1000,14 +1089,9 @@ def interface_etude_modeles_etape():
         max_models = 5
 
     def _modeles_entraines():
-        """Modèles réellement disponibles pour l'analyse (= déjà entraînés)."""
         fitted = main_ns.get("fitted_pipelines_widget")
         return list(fitted.keys()) if fitted else []
 
-    # Sélecteur de modèles à cocher, groupés par catégorie (indépendant du Top N :
-    # les modèles cochés ici s'ajoutent au Top N choisi ci-dessous). Seuls les
-    # modèles déjà entraînés (présents dans fitted_pipelines_widget) sont proposés,
-    # car un modèle non entraîné ne peut produire aucune analyse.
     zone_selecteur = widgets.VBox()
     _get_modeles_coches_ref = {"fn": (lambda: [])}
 
@@ -1019,8 +1103,7 @@ def interface_etude_modeles_etape():
         else:
             getter = lambda: []
             zone_selecteur.children = [widgets.HTML(
-                "<i>⚠️ Aucun modèle entraîné pour l'instant. Lancez d'abord l'entraînement "
-                "(étape précédente), puis cliquez sur 🔄 pour rafraîchir cette liste.</i>"
+                "<i>⚠️ Aucun modèle entraîné pour l'instant. Lancez d'abord l'entraînement...</i>"
             )]
         _get_modeles_coches_ref["fn"] = getter
 
@@ -1029,7 +1112,7 @@ def interface_etude_modeles_etape():
         layout=widgets.Layout(width='300px')
     )
     btn_refresh_modeles.on_click(_reconstruire_selecteur)
-    _reconstruire_selecteur()  # construction initiale, selon l'état actuel de l'entraînement
+    _reconstruire_selecteur()
 
     metrique_dropdown = widgets.Dropdown(
         options=['Recall', 'F1', 'ROC_AUC', 'Precision', 'Accuracy', 'PR_AUC'],
@@ -1040,21 +1123,22 @@ def interface_etude_modeles_etape():
     )
 
     top_n_models_slider = widgets.IntSlider(
-        value=1,
-        min=1,
-        max=max_models,
-        step=1,
+        value=1, min=1, max=max_models, step=1,
         description='Top N :',
         style={'description_width': 'initial'},
         layout=widgets.Layout(width='220px')
     )
     
     dataset_dropdown = widgets.Dropdown(
-        options=[('Jeu de Test', 'test'), ('Jeu d\'Entraînement (Train)', 'train')],
+        options=[
+            ('Jeu de Test', 'test'),
+            ('Jeu d\'Entraînement (Train)', 'train'),
+            ('Validation croisée (CV, 5 folds)', 'cv'),
+        ],
         value='test',
         description='Données :',
         style={'description_width': 'initial'},
-        layout=widgets.Layout(width='240px')
+        layout=widgets.Layout(width='260px')
     )
 
     btn_eval = widgets.Button(
@@ -1063,17 +1147,18 @@ def interface_etude_modeles_etape():
         layout=widgets.Layout(width='300px', height='40px')
     )
 
-    # Création de 7 onglets
-    tab_contents = [widgets.Output() for _ in range(7)]
+    # Création de 8 onglets au total
+    tab_contents = [widgets.Output() for _ in range(8)]
     tab = widgets.Tab()
     tab.children = tab_contents
     tab.set_title(0, "1. Probas & Erreurs")
     tab.set_title(1, "2. Résidus & CV")
     tab.set_title(2, "3. Importances")
-    tab.set_title(3, "4. Matrices de confusion")
-    tab.set_title(4, "5. Grille True vs Pred")
-    tab.set_title(5, "6. Corrélations & Pairplot")
-    tab.set_title(6, "7. ROC / PR / Calibration / Seuil")
+    tab.set_title(3, "4. Beeswarm SHAP")      # <-- Nouvel onglet ajouté
+    tab.set_title(4, "5. Matrices de confusion")
+    tab.set_title(5, "6. Grille True vs Pred")
+    tab.set_title(6, "7. Corrélations & Pairplot")
+    tab.set_title(7, "8. ROC / PR / Calibration / Seuil")
 
     def on_eval_clicked(b):
         import sys
@@ -1082,7 +1167,7 @@ def interface_etude_modeles_etape():
         if "df_res_widget" not in main_ns or "fitted_pipelines_widget" not in main_ns:
             with tab.children[0]:
                 clear_output()
-                print("❌ Erreur : Veuillez d'abord exécuter l'entraînement des modèles via le panneau de contrôle !")
+                print("❌ Erreur : Veuillez d'abord exécuter l'entraînement des modèles !")
             return
 
         current_df_res = main_ns["df_res_widget"]
@@ -1092,10 +1177,17 @@ def interface_etude_modeles_etape():
 
         selected_metric = metrique_dropdown.value.lower()
         current_top_n = top_n_models_slider.value
-        use_train = (dataset_dropdown.value == 'train')
-        
-        X_eval, y_eval = (X_train, y_train) if use_train else (X_test, y_test)
-        dataset_label = "Entraînement (Train)" if use_train else "Test"
+        mode_donnees = dataset_dropdown.value  # 'test' | 'train' | 'cv'
+
+        if mode_donnees == 'train':
+            X_eval, y_eval = X_train, y_train
+            dataset_label = "Entraînement (Train)"
+        elif mode_donnees == 'cv':
+            X_eval, y_eval = X_train, y_train
+            dataset_label = "Validation croisée (CV, 5 folds)"
+        else:
+            X_eval, y_eval = X_test, y_test
+            dataset_label = "Test"
 
         colonnes_possibles = [c for c in current_df_res.columns if selected_metric in c.lower()]
         colonne_selection = colonnes_possibles[0] if colonnes_possibles else current_df_res.columns[0]
@@ -1103,9 +1195,6 @@ def interface_etude_modeles_etape():
         top_models_df = current_df_res.sort_values(by=colonne_selection, ascending=False).head(current_top_n)
         top_model_names = top_models_df.index.tolist()
 
-        # Modèles cochés manuellement (catégorisés), filtrés sur les modèles réellement
-        # entraînés (double sécurité si la liste n'a pas été rafraîchie). Ils s'ajoutent
-        # au Top N, sans doublon, en conservant l'ordre (sélection manuelle en premier).
         modeles_coches = [m for m in _get_modeles_coches_ref["fn"]() if m in current_fitted_pipelines]
         noms_vus = set()
         top_model_names_fusionnes = []
@@ -1118,8 +1207,22 @@ def interface_etude_modeles_etape():
         if not top_model_names:
             with tab.children[0]:
                 clear_output()
-                print("❌ Aucun modèle à analyser : cochez au moins un modèle dans les catégories ci-dessus, ou augmentez le Top N.")
+                print("❌ Aucun modèle à analyser.")
             return
+
+        # current_fitted_pipelines_eval : dictionnaire utilisé pour l'AFFICHAGE
+        # (probas, matrices de confusion, ROC, etc.). En mode CV, il s'agit de
+        # proxies renvoyant des prédictions Out-Of-Fold. Le SHAP (onglet 4)
+        # continue lui d'utiliser current_fitted_pipelines (le vrai modèle final)
+        # car il n'existe pas de "SHAP par pli de CV".
+        if mode_donnees == 'cv':
+            print("⏳ Calcul des prédictions Out-Of-Fold (validation croisée, 5 folds) — cela peut prendre un instant...")
+            current_fitted_pipelines_eval = {
+                nom: _PipelineEvalCV(current_fitted_pipelines[nom], X_train, y_train, cv=5)
+                for nom in top_model_names
+            }
+        else:
+            current_fitted_pipelines_eval = current_fitted_pipelines
 
         # --- Onglet 0 : Probas & Erreurs ---
         with tab.children[0]:
@@ -1130,87 +1233,103 @@ def interface_etude_modeles_etape():
                 threshold=0.5, nom_modele=top_model_names
             )
             for nom_modele in top_model_names:
-                analyser_distribution_erreurs(current_fitted_pipelines[nom_modele], X_eval, y_eval, nom_modele=f"{nom_modele} ({dataset_label})")
+                analyser_distribution_erreurs(current_fitted_pipelines_eval[nom_modele], X_eval, y_eval, nom_modele=f"{nom_modele} ({dataset_label})")
 
-        # --- Onglet 1 : Résidus & Comparaison Train/Test ---
+        # --- Onglet 1 : Résidus & CV ---
         with tab.children[1]:
             clear_output()
-            print(f"--- 2. Diagnostic surapprentissage / sous-apprentissage — TOUS les modèles ---")
+            print(f"--- 2. Diagnostic surapprentissage / sous-apprentissage ---")
             diagnostiquer_overfitting_tableau(current_df_res)
-
-            print(f"\n--- 3. Train (résubstitution) vs CV vs Test — Top {current_top_n} ---")
+            print(f"\n--- 3. Train vs CV vs Test ---")
             comparer_train_test(current_df_res, top_model_names=top_model_names)
-
             print(f"\n--- 4. Analyse des résidus [{dataset_label}] ---")
             for nom_modele in top_model_names:
-                analyser_residus(current_fitted_pipelines[nom_modele], X_eval, y_eval, nom_modele=f"{nom_modele} ({dataset_label})")
+                analyser_residus(current_fitted_pipelines_eval[nom_modele], X_eval, y_eval, nom_modele=f"{nom_modele} ({dataset_label})")
 
         # --- Onglet 2 : Importances ---
         with tab.children[2]:
             clear_output()
             print(f"--- 4. Importances par permutation ({dataset_label}) ---")
             importances_pivot = importance_permutation_tous_modeles(
-                current_fitted_pipelines, X_eval, y_eval, models=top_model_names, scoring='f1'
+                current_fitted_pipelines_eval, X_eval, y_eval, models=top_model_names, scoring='f1'
             )
             plot_importance_heatmap(importances_pivot, top_n=10)
             plot_importance_grille(importances_pivot, top_n=10, ncols=2)
             
-        
-            print(f"\n--- 5. Permutation Importances détaillée avec écart-type (Top modèle) ---")
+            print(f"\n--- 5. Permutation Importances détaillée avec écart-type ---")
             meilleur_modele = top_model_names[0]
             importance_permutation_avec_erreur(
-                current_fitted_pipelines[meilleur_modele], X_eval, y_eval, 
+                current_fitted_pipelines_eval[meilleur_modele], X_eval, y_eval, 
                 nom_modele=f"{meilleur_modele} ({dataset_label})", scoring='roc_auc'
             )
 
-        # --- Onglet 3 : Matrices de confusion ---
+        # --- Onglet 3 : Beeswarm SHAP (NOUVEL ONGLET) ---
         with tab.children[3]:
+            clear_output()
+            if mode_donnees == 'cv':
+                print("ℹ️ SHAP n'est pas calculable par pli de CV (chaque pli entraîne un modèle "
+                      "différent). Les graphiques ci-dessous expliquent le modèle final, entraîné "
+                      "sur l'ensemble Train complet, évalué sur ce même Train.")
+            print(f"--- Graphique Beeswarm SHAP (vue globale) [{dataset_label}] ---")
+            for nom_modele in top_model_names:
+                # SHAP utilise toujours le vrai pipeline entraîné (pas le proxy CV)
+                tracer_beeswarm_shap(current_fitted_pipelines[nom_modele], X_eval, nom_modele=f"{nom_modele} ({dataset_label})")
+
+            print(f"\n--- Graphique SHAP local (exemple sur la 1ère observation) [{dataset_label}] ---")
+            meilleur_modele_shap = top_model_names[0]
+            tracer_shap_local(
+                current_fitted_pipelines[meilleur_modele_shap], X_eval, index=0,
+                nom_modele=f"{meilleur_modele_shap} ({dataset_label})"
+            )
+            # Astuce : appelez tracer_shap_local(pipeline, X_eval, index=42, ...)
+            # pour expliquer n'importe quelle autre observation précise.
+
+        # --- Onglet 4 : Matrices de confusion ---
+        with tab.children[4]:
             clear_output()
             print(f"--- 6. Matrices de confusion [{dataset_label}] ---")
             for nom_modele in top_model_names:
-                pipeline = current_fitted_pipelines[nom_modele]
+                pipeline = current_fitted_pipelines_eval[nom_modele]
                 y_pred = pipeline.predict(X_eval)
                 afficher_matrice_confusion(y_eval, y_pred, nom_modele=f"{nom_modele} ({dataset_label})")
 
-        # --- Onglet 4 : Grille True vs Pred ---
-        with tab.children[4]:
+        # --- Onglet 5 : Grille True vs Pred ---
+        with tab.children[5]:
             clear_output()
             print(f"--- 7. Grille comparative Probabilités vs Réel [{dataset_label}] ---")
-            afficher_grille_true_vs_pred(current_fitted_pipelines, top_model_names, X_eval, y_eval, ncols=2)
+            afficher_grille_true_vs_pred(current_fitted_pipelines_eval, top_model_names, X_eval, y_eval, ncols=2)
 
-        # --- Onglet 5 : Corrélations de Pearson, Spearman & Pairplot ---
-        with tab.children[5]:
+        # --- Onglet 6 : Corrélations & Pairplot ---
+        with tab.children[6]:
             clear_output()
             print(f"--- 8. Analyse des corrélations & Pairplot [{dataset_label}] ---")
             analyser_correlations_features(X_eval, seuil_pearson=0.85)
 
-        # --- Onglet 6 : ROC / PR / Calibration / Learning curve / Seuil optimal ---
-        with tab.children[6]:
+        # --- Onglet 7 : ROC / PR / Calibration / Seuil ---
+        with tab.children[7]:
             clear_output()
-            print(f"--- 9. Courbe ROC [{dataset_label}] (Top {current_top_n}) ---")
-            tracer_courbe_roc(current_fitted_pipelines, X_eval, y_eval, model_names=top_model_names)
-
-            print(f"\n--- 10. Courbe Precision-Recall [{dataset_label}] (Top {current_top_n}) ---")
-            tracer_courbe_precision_recall(current_fitted_pipelines, X_eval, y_eval, model_names=top_model_names)
-
-            print(f"\n--- 11. Courbe de calibration [{dataset_label}] (Top {current_top_n}) ---")
-            tracer_courbe_calibration(current_fitted_pipelines, X_eval, y_eval, model_names=top_model_names)
-
-            print(f"\n--- 12. Courbe d'apprentissage (sur le meilleur modèle du Top {current_top_n}) ---")
+            print(f"--- 9. Courbe ROC [{dataset_label}] ---")
+            tracer_courbe_roc(current_fitted_pipelines_eval, X_eval, y_eval, model_names=top_model_names)
+            print(f"\n--- 10. Courbe Precision-Recall [{dataset_label}] ---")
+            tracer_courbe_precision_recall(current_fitted_pipelines_eval, X_eval, y_eval, model_names=top_model_names)
+            print(f"\n--- 11. Courbe de calibration [{dataset_label}] ---")
+            tracer_courbe_calibration(current_fitted_pipelines_eval, X_eval, y_eval, model_names=top_model_names)
+            print(f"\n--- 12. Courbe d'apprentissage ---")
             meilleur_modele = top_model_names[0]
+            # La courbe d'apprentissage refait ses propres CV internes : on lui
+            # passe toujours le vrai pipeline (pas le proxy), quel que soit le mode.
             tracer_courbe_apprentissage(
-                current_fitted_pipelines[meilleur_modele], X_eval, y_eval,
+                current_fitted_pipelines[meilleur_modele], X_train, y_train,
                 scoring='roc_auc', nom_modele=meilleur_modele,
             )
-
-            print(f"\n--- 13. Seuil optimal (Precision / Recall / F1 vs seuil) ---")
+            print(f"\n--- 13. Seuil optimal ---")
             for nom_modele in top_model_names:
-                analyser_seuil_optimal(current_fitted_pipelines[nom_modele], X_eval, y_eval, nom_modele=f"{nom_modele} ({dataset_label})")
+                analyser_seuil_optimal(current_fitted_pipelines_eval[nom_modele], X_eval, y_eval, nom_modele=f"{nom_modele} ({dataset_label})")
 
     btn_eval.on_click(on_eval_clicked)
 
     return widgets.VBox([
-        widgets.HBox([widgets.HTML("<b>Modèles à inclure manuellement (en plus du Top N ci-dessous) :</b>"),
+        widgets.HBox([widgets.HTML("<b>Modèles à inclure manuellement (en plus du Top N) :</b>"),
                       btn_refresh_modeles]),
         zone_selecteur,
         widgets.HBox([metrique_dropdown, top_n_models_slider, dataset_dropdown]),
