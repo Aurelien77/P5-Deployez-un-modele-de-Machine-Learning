@@ -24,6 +24,9 @@ EXPLICATIONS_FEATURES = {
     "hs_et_salaire_bas": "HS et salaire < médiane → surcharge + bas salaire.",
     "jeune_faible_anciennete": "Âge ≤ 30 et ancienneté ≤ 2 ans → départ précoce.",
     "serial-worker": "≥ 5 employeurs précédents → habitude de partir.",
+    "poste_x_niveau": "Croisement poste × niveau hiérarchique : le taux de départ n'est pas le même pour un commercial N1 et un commercial N4.",
+    "formations_par_an": "Nombre de formations / années dans l'entreprise → rythme de formation, pas le stock accumulé avec l'ancienneté.",
+    "part_sans_promotion": "Années depuis la dernière promotion / années dans l'entreprise → proche de 1 = pas promu depuis l'arrivée.",
 }
 
 # Vocabulaire unique d'unités (affichage + métadonnées, les colonnes ne sont pas renommées).
@@ -45,6 +48,9 @@ UNITES_PAR_NOM: dict[str, str] = {
     "hs_et_salaire_bas": "0/1",
     "jeune_faible_anciennete": "0/1",
     "serial-worker": "0/1",
+    "poste_x_niveau": "texte",
+    "formations_par_an": "%",
+    "part_sans_promotion": "%",
     # salaire / taux
     "revenu_mensuel": "€",
     "augementation_salaire_precedente": "%",
@@ -264,6 +270,62 @@ def creer_features(df_clean: pd.DataFrame, verbose: bool = True) -> pd.DataFrame
         )
     if "nombre_experiences_precedentes" in df_clean.columns:
         ajouter_feature("serial-worker", (df_clean["nombre_experiences_precedentes"] >= 5).astype(int))
+
+    col_poste = next(
+        (c for c in ("poste", "intitule_poste", "emploi") if c in df_clean.columns),
+        None,
+    )
+    col_niv = next(
+        (
+            c
+            for c in ("niveau_hierarchique_poste", "niveau_hierarchique", "grade")
+            if c in df_clean.columns
+        ),
+        None,
+    )
+    if col_poste and col_niv:
+        poste_txt = df_clean[col_poste].astype(str).str.strip()
+        niveau_num = pd.to_numeric(df_clean[col_niv], errors="coerce")
+        niveau_txt = niveau_num.map(lambda v: f"N{int(v)}" if pd.notna(v) else "N?")
+        ajouter_feature(
+            "poste_x_niveau",
+            (poste_txt + " | " + niveau_txt).where(poste_txt.ne("nan") & niveau_num.notna(), pd.NA),
+        )
+
+    col_form = next(
+        (
+            c
+            for c in (
+                "nb_formations_suivies",
+                "nombre_formations_suivies",
+                "nombre_formations",
+                "nombre_participation_formation",
+                "nombre_participation_formations",
+            )
+            if c in df_clean.columns
+        ),
+        None,
+    )
+    if col_form and "annees_dans_l_entreprise" in df_clean.columns:
+        ajouter_feature(
+            "formations_par_an",
+            (
+                pd.to_numeric(df_clean[col_form], errors="coerce")
+                / (pd.to_numeric(df_clean["annees_dans_l_entreprise"], errors="coerce") + 1.0)
+            ).round(3),
+        )
+
+    if {
+        "annees_depuis_la_derniere_promotion",
+        "annees_dans_l_entreprise",
+    } <= set(df_clean.columns):
+        ajouter_feature(
+            "part_sans_promotion",
+            (
+                pd.to_numeric(df_clean["annees_depuis_la_derniere_promotion"], errors="coerce")
+                / (pd.to_numeric(df_clean["annees_dans_l_entreprise"], errors="coerce") + 1e-5)
+            ).round(3),
+        )
 
     if "id_employee_clean" in df_clean.columns:
         df_clean = df_clean.drop(columns=["id_employee_clean"])

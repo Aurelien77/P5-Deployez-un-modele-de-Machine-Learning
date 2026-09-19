@@ -66,6 +66,43 @@ def selectionner_features(
 # ----------------------------------------------------------------------
 # 2. Construction du préprocesseur
 # ----------------------------------------------------------------------
+def _inferer_unite_colonne(nom: str) -> str:
+    for chemin in ("new_features", "features.new_features", "exploration.new_features"):
+        try:
+            module = __import__(chemin, fromlist=["inferer_unite"])
+            fn = getattr(module, "inferer_unite", None)
+            if callable(fn):
+                return fn(nom) or ""
+        except Exception:
+            continue
+    return ""
+
+
+def _est_colonne_texte(nom: str, X=None) -> bool:
+    if X is not None and hasattr(X, "columns") and nom in getattr(X, "columns", []):
+        serie = X[nom]
+        if str(serie.dtype) in {"string", "category"}:
+            return True
+        if pd.api.types.is_object_dtype(serie) or pd.api.types.is_string_dtype(serie):
+            convertie = pd.to_numeric(serie, errors="coerce")
+            if convertie.notna().mean() < 0.5:
+                return True
+    return _inferer_unite_colonne(nom) == "texte"
+
+
+def _repartir_nouvelles_features(cols, X=None):
+    """Sépare les features métier : numériques / binaires / texte (one-hot)."""
+    numerique, binaire, texte = [], [], []
+    for col in cols or []:
+        if _est_colonne_texte(col, X):
+            texte.append(col)
+        elif _inferer_unite_colonne(col) == "0/1":
+            binaire.append(col)
+        else:
+            numerique.append(col)
+    return numerique, binaire, texte
+
+
 def construire_preprocessor(
     colonnes_lineaires,
     colonnes_non_lineaires,
@@ -77,18 +114,32 @@ def construire_preprocessor(
     inclure_qualitatives=True,
     inclure_booleennes=True,
     inclure_ratios=True,
+    X=None,
 ):
+    ratios_num, ratios_bool, ratios_texte = _repartir_nouvelles_features(cols_ratios, X=X)
+
+    cols_qualitatives = list(cols_qualitatives or [])
+    cols_booleennes = list(cols_booleennes or [])
+    for col in ratios_texte:
+        if col not in cols_qualitatives:
+            cols_qualitatives.append(col)
+    for col in ratios_bool:
+        if col not in cols_booleennes:
+            cols_booleennes.append(col)
+
     transformers = []
     if inclure_lineaires and colonnes_lineaires:
-        transformers.append(('num_lin', StandardScaler(), colonnes_lineaires))
+        transformers.append(('num_lin', StandardScaler(), list(colonnes_lineaires)))
     if inclure_non_lineaires and colonnes_non_lineaires:
-        transformers.append(('num_nonlin', StandardScaler(), colonnes_non_lineaires))
+        transformers.append(('num_nonlin', StandardScaler(), list(colonnes_non_lineaires)))
     if inclure_qualitatives and cols_qualitatives:
-        transformers.append(('cat', OneHotEncoder(handle_unknown='ignore', sparse_output=False), cols_qualitatives))
+        transformers.append(
+            ('cat', OneHotEncoder(handle_unknown='ignore', sparse_output=False), cols_qualitatives)
+        )
     if inclure_booleennes and cols_booleennes:
         transformers.append(('bool', 'passthrough', cols_booleennes))
-    if inclure_ratios and cols_ratios:
-        transformers.append(('ratios', StandardScaler(), cols_ratios))
+    if inclure_ratios and ratios_num:
+        transformers.append(('ratios', StandardScaler(), ratios_num))
 
     return ColumnTransformer(transformers=transformers, remainder='drop')
 
@@ -593,6 +644,7 @@ def bouton_preprocesseur_etape(get_X_train_test_callback):
                 cols_qualitatives=selection_par_groupe.get("qualitatives", []),
                 cols_booleennes=selection_par_groupe.get("booleennes", []),
                 cols_ratios=selection_par_groupe.get("nouvelles_features", []),
+                X=X_train,
             )
 
             prep.fit(X_train)

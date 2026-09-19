@@ -1147,18 +1147,18 @@ def interface_etude_modeles_etape():
         layout=widgets.Layout(width='300px', height='40px')
     )
 
-    # Création de 8 onglets au total
-    tab_contents = [widgets.Output() for _ in range(8)]
+    tab_contents = [widgets.Output() for _ in range(9)]
     tab = widgets.Tab()
     tab.children = tab_contents
     tab.set_title(0, "1. Probas & Erreurs")
     tab.set_title(1, "2. Résidus & CV")
     tab.set_title(2, "3. Importances")
-    tab.set_title(3, "4. Beeswarm SHAP")      # <-- Nouvel onglet ajouté
+    tab.set_title(3, "4. Beeswarm SHAP")
     tab.set_title(4, "5. Matrices de confusion")
     tab.set_title(5, "6. Grille True vs Pred")
     tab.set_title(6, "7. Corrélations & Pairplot")
-    tab.set_title(7, "8. ROC / PR / Calibration / Seuil")
+    tab.set_title(7, "8. ROC / Calibration / Seuil")
+    tab.set_title(8, "9. Précision–Rappel")
 
     def on_eval_clicked(b):
         import sys
@@ -1310,21 +1310,35 @@ def interface_etude_modeles_etape():
             clear_output()
             print(f"--- 9. Courbe ROC [{dataset_label}] ---")
             tracer_courbe_roc(current_fitted_pipelines_eval, X_eval, y_eval, model_names=top_model_names)
-            print(f"\n--- 10. Courbe Precision-Recall [{dataset_label}] ---")
-            tracer_courbe_precision_recall(current_fitted_pipelines_eval, X_eval, y_eval, model_names=top_model_names)
-            print(f"\n--- 11. Courbe de calibration [{dataset_label}] ---")
+            print(f"\n--- 10. Courbe de calibration [{dataset_label}] ---")
             tracer_courbe_calibration(current_fitted_pipelines_eval, X_eval, y_eval, model_names=top_model_names)
-            print(f"\n--- 12. Courbe d'apprentissage ---")
+            print(f"\n--- 11. Courbe d'apprentissage ---")
             meilleur_modele = top_model_names[0]
-            # La courbe d'apprentissage refait ses propres CV internes : on lui
-            # passe toujours le vrai pipeline (pas le proxy), quel que soit le mode.
             tracer_courbe_apprentissage(
                 current_fitted_pipelines[meilleur_modele], X_train, y_train,
                 scoring='roc_auc', nom_modele=meilleur_modele,
             )
-            print(f"\n--- 13. Seuil optimal ---")
+            print(f"\n--- 12. Seuil optimal ---")
             for nom_modele in top_model_names:
                 analyser_seuil_optimal(current_fitted_pipelines_eval[nom_modele], X_eval, y_eval, nom_modele=f"{nom_modele} ({dataset_label})")
+
+        with tab.children[8]:
+            clear_output()
+            print(f"--- Courbe Précision–Rappel [{dataset_label}] ---")
+            print("Axe X = rappel (départs attrapés). Axe Y = précision (alertes justes).")
+            print("La ligne pointillée = taux de départs réel (baseline).")
+            print(f"Modèles affichés ({len(top_model_names)}) : {', '.join(top_model_names)}")
+            tracer_courbe_precision_recall(
+                current_fitted_pipelines_eval, X_eval, y_eval, model_names=top_model_names
+            )
+            print("\n--- Seuil qui maximise le F1 (même courbe, autre lecture) ---")
+            for nom_modele in top_model_names:
+                analyser_seuil_optimal(
+                    current_fitted_pipelines_eval[nom_modele],
+                    X_eval,
+                    y_eval,
+                    nom_modele=f"{nom_modele} ({dataset_label})",
+                )
 
     btn_eval.on_click(on_eval_clicked)
 

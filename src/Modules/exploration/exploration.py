@@ -986,6 +986,22 @@ def _remplacer_paires_imbriquees(
     return data, colonnes_finales, paires
 
 
+def _libelle_axe(nom: str, largeur: int = 16) -> str:
+    """Libellé court pour les axes d'un pairplot (noms techniques inchangés)."""
+    import re
+    import textwrap
+
+    m_ratio = re.match(r"^ratio_(.+)_sur_(.+)$", nom)
+    if m_ratio:
+        nom = f"{m_ratio.group(1)} / {m_ratio.group(2)}"
+    else:
+        m_ecart = re.match(r"^ecart_(.+)_moins_(.+)$", nom)
+        if m_ecart:
+            nom = f"{m_ecart.group(1)} − {m_ecart.group(2)}"
+    nom = nom.replace("_", " ")
+    return "\n".join(textwrap.wrap(nom, width=largeur)) or nom
+
+
 def plot_matrice_nuages(
     df: pd.DataFrame,
     colonnes: Sequence[str],
@@ -1039,28 +1055,94 @@ def plot_matrice_nuages(
     if hue:
         print("Couleur = Reste / Part.")
 
+    alias = {c: _libelle_axe(c) for c in cols}
+    data_plot = data.rename(columns=alias)
+    vars_plot = [alias[c] for c in cols]
+    if hue:
+        data_plot[hue] = data[hue]
+
     grid = sns.pairplot(
-        data,
-        vars=cols,
+        data_plot,
+        vars=vars_plot,
         hue=hue,
         corner=False,
         diag_kind="hist",
         plot_kws={"alpha": 0.35, "s": 18, "edgecolor": "none"},
         diag_kws={"alpha": 0.7},
-        height=2.15,
+        height=2.6,
     )
-    grid.fig.suptitle(f"Nuages de points — {nom}", y=1.02, fontsize=13)
+    for ax in grid.axes[-1, :]:
+        plt.setp(ax.get_xticklabels(), rotation=25, ha="right", fontsize=7)
+        ax.set_xlabel(ax.get_xlabel(), fontsize=8)
+    for ax in grid.axes[:, 0]:
+        plt.setp(ax.get_yticklabels(), fontsize=7)
+        ax.set_ylabel(ax.get_ylabel(), fontsize=8)
+    for ax in grid.axes.ravel():
+        if ax is not None:
+            ax.tick_params(labelsize=7)
+    grid.fig.suptitle(f"Nuages de points — {nom}", y=1.03, fontsize=13)
+    grid.fig.tight_layout()
+    grid.fig.subplots_adjust(top=0.92, bottom=0.12, left=0.12)
     plt.show()
+
+
+def _noms_features_metier() -> list[str]:
+    """Liste des features créées dans new_features.EXPLICATIONS_FEATURES."""
+    import importlib
+
+    for nom in ("new_features", "exploration.new_features", "features.new_features"):
+        try:
+            module = importlib.import_module(nom)
+            expl = getattr(module, "EXPLICATIONS_FEATURES", None)
+            if isinstance(expl, dict):
+                return list(expl.keys())
+        except Exception:
+            continue
+    try:
+        from .new_features import EXPLICATIONS_FEATURES as expl
+        if isinstance(expl, dict):
+            return list(expl.keys())
+    except Exception:
+        pass
+    return []
+
+
+def _colonnes_features_metier_dans_df(df: pd.DataFrame) -> list[str]:
+    """Noms métier réellement présents dans df (gère éventuellement le suffixe _value)."""
+    presentes: list[str] = []
+    vus: set[str] = set()
+    for nom in _noms_features_metier():
+        for candidat in (nom, f"{nom}_value"):
+            if candidat in df.columns and candidat not in vus:
+                presentes.append(candidat)
+                vus.add(candidat)
+                break
+    return presentes
+
+
+def _filtrer_classification(
+    classif: Mapping[str, list[str]],
+    colonnes: Sequence[str] | None,
+) -> dict[str, list[str]]:
+    """Restreint chaque groupe de classification à une liste de colonnes."""
+    if colonnes is None:
+        return {k: list(v) for k, v in classif.items()}
+    autorisees = set(colonnes)
+    return {k: [c for c in v if c in autorisees] for k, v in classif.items()}
 
 
 def analyser_correlations_vs_cible(
     df: pd.DataFrame,
     target_col: str | None = None,
     nom: str = "Attrition",
+    colonnes: Sequence[str] | None = None,
 ) -> dict | None:
     """Étude des quantitatives CONTRE le départ (bouton Attrition globale).
 
     Test de forme : logit(cible) ~ x + x²  (exploration_y / features).
+
+    `colonnes` : si fourni, n'analyse que ces variables. Absent = analyse
+    complète (comportement historique, utilisé ailleurs dans le projet).
     """
     cible = target_col or _trouver_colonne(df, CANDIDATS_CIBLE)
     if not cible or cible not in df.columns:
@@ -1082,6 +1164,12 @@ def analyser_correlations_vs_cible(
     classif = classifier_et_detecter(df_lin, cible)
     classif["lineaires"] = [c for c in classif["lineaires"] if c not in exclus]
     classif["non_lineaires"] = [c for c in classif["non_lineaires"] if c not in exclus]
+    classif = _filtrer_classification(classif, colonnes)
+    if colonnes is not None:
+        print(f"• Analyse restreinte à {len(colonnes)} colonne(s) : {list(colonnes)}")
+        if not any(classif.get(k) for k in ("lineaires", "non_lineaires", "qualitatives", "booleennes")):
+            print("❌ Aucune des colonnes demandées n'est analysable (absente ou exclue).")
+            return None
 
     print(f"\n--- Forme de chaque quantitative vs '{cible}' (logit ~ x + x²) ---")
     afficher_classification(classif)
@@ -1698,11 +1786,145 @@ def analyser_attrition_globale(
     print("🧹 Mémoire nettoyée : le DataFrame fusionné a été supprimé.")
 
 
-# ---------------------------------------------------------------------------
-# Bouton notebook (remplace analyse_new_feature.py)
-# ---------------------------------------------------------------------------
-def analyser_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Analyse d'attrition sur df_clean (cible encodée si besoin)."""
+# Variables sources à recroiser avec les features métier (bloc carrière + signaux hors bloc).
+_ANCIENNES_POUR_CROISEMENT: tuple[str, ...] = (
+    "age",
+    "revenu_mensuel",
+    "annee_experience_totale",
+    "annees_experience_totale",
+    "annees_dans_l_entreprise",
+    "annees_dans_le_poste_actuel",
+    "annees_sous_responsable_actuel",
+    "niveau_hierarchique_poste",
+    "annees_depuis_la_derniere_promotion",
+    "nb_formations_suivies",
+    "nombre_participation_pee",
+    "note_evaluation_precedente",
+    "satisfaction_employee_nature_travail",
+    "satisfaction_employee_environnement",
+    "heure_supplementaires",
+    "distance_domicile_travail",
+)
+
+
+def comparer_nouvelles_et_anciennes(
+    df: pd.DataFrame,
+    target_col: str,
+    nom: str = "nouvelles × anciennes",
+) -> pd.DataFrame | None:
+    """Petite section : lien des features métier avec Y et avec les variables sources."""
+    nouvelles = _colonnes_features_metier_dans_df(df)
+    anciennes = [c for c in _ANCIENNES_POUR_CROISEMENT if c in df.columns and c not in nouvelles]
+    if not nouvelles:
+        print("⚠️ Pas de features métier dans le DataFrame : section nouvelles × anciennes ignorée.")
+        return None
+
+    print("\n" + "=" * 60)
+    print("NOUVELLES FEATURES × ANCIENNES VARIABLES")
+    print("=" * 60)
+    print(f"• Nouvelles ({len(nouvelles)}) : {nouvelles}")
+    print(f"• Anciennes retenues ({len(anciennes)}) : {anciennes}")
+
+    y = _vers_numerique(df[target_col])
+    lignes = []
+    for col in nouvelles:
+        serie = df[col]
+        n_mod = int(serie.nunique(dropna=True))
+        est_texte = (
+            serie.dtype == "object"
+            or str(serie.dtype).startswith("str")
+            or pd.api.types.is_string_dtype(serie)
+        )
+        if est_texte or (n_mod > 2 and n_mod <= 25 and not pd.api.types.is_numeric_dtype(serie)):
+            coef = _cramer_v(serie, df[target_col])
+            methode, forme = "Cramér V", "qualitative"
+        elif n_mod <= 2:
+            codes = pd.Series(pd.factorize(serie, sort=True)[0], index=df.index).replace(-1, np.nan)
+            coef = _correlation_sure(codes, y, method="pearson")
+            methode, forme = "point-bisériel", "binaire"
+        else:
+            coef = _correlation_sure(_vers_numerique(serie), y, method="spearman")
+            methode, forme = "Spearman ρ", "numérique"
+        lignes.append({"feature": col, "lien_avec_Y": coef, "methode_Y": methode, "forme": forme})
+
+    tableau_y = pd.DataFrame(lignes)
+    if not tableau_y.empty:
+        tableau_y = tableau_y.sort_values("lien_avec_Y", key=lambda s: s.abs(), ascending=False)
+        print("\n--- Nouvelles features × cible ---")
+        _afficher(tableau_y.round(3).reset_index(drop=True))
+
+        fig, ax = plt.subplots(figsize=(9, max(3.2, 0.38 * len(tableau_y))))
+        couleurs = [
+            "#55A868" if f == "qualitative" else ("#4C72B0" if f == "binaire" else "#DD8452")
+            for f in tableau_y["forme"].iloc[::-1]
+        ]
+        ax.barh(tableau_y["feature"].iloc[::-1], tableau_y["lien_avec_Y"].iloc[::-1], color=couleurs)
+        ax.axvline(0, color="black", linewidth=0.8)
+        ax.set_xlabel("Lien avec le départ")
+        ax.set_title("Nouvelles features × Y")
+        fig.tight_layout()
+        plt.show()
+
+    # Heatmap nouvelles (lignes) × (Y + anciennes numériques) (colonnes)
+    cols_num_anciennes = []
+    for c in anciennes:
+        s = _vers_numerique(df[c])
+        if s.notna().mean() >= 0.5 and int(s.nunique(dropna=True)) >= 3:
+            cols_num_anciennes.append(c)
+
+    nouvelles_num = []
+    for c in nouvelles:
+        s = _vers_numerique(df[c])
+        if s.notna().mean() >= 0.5 and int(s.nunique(dropna=True)) >= 3:
+            nouvelles_num.append(c)
+
+    if nouvelles_num and (cols_num_anciennes or target_col in df.columns):
+        bloc = nouvelles_num + cols_num_anciennes + [target_col]
+        bloc = list(dict.fromkeys(bloc))
+        data = pd.DataFrame({c: _vers_numerique(df[c]) for c in bloc})
+        corr = data.corr(method="spearman")
+        extraire = corr.loc[nouvelles_num, [c for c in ([target_col] + cols_num_anciennes) if c in corr.columns]]
+
+        print("\n--- Spearman : nouvelles (lignes) × anciennes + Y (colonnes) ---")
+        print("Case foncée = la feature métier redit la même chose que la variable source.")
+        print("Case pâle + lien avec Y = signal complémentaire (à garder).")
+        _afficher(extraire.round(2))
+
+        fig2, ax2 = plt.subplots(figsize=(max(8, 0.55 * extraire.shape[1] + 4), max(3.5, 0.42 * extraire.shape[0] + 1.8)))
+        sns.heatmap(
+            extraire,
+            ax=ax2,
+            cmap="RdBu_r",
+            center=0,
+            vmin=-1,
+            vmax=1,
+            annot=True,
+            fmt=".2f",
+            annot_kws={"size": 8},
+            linewidths=0.4,
+            linecolor="white",
+        )
+        ax2.set_title(f"Nouvelles × anciennes — {nom}")
+        plt.setp(ax2.get_xticklabels(), rotation=40, ha="right", fontsize=8)
+        plt.setp(ax2.get_yticklabels(), rotation=0, fontsize=8)
+        fig2.tight_layout()
+        plt.show()
+
+    return tableau_y if not tableau_y.empty else None
+
+
+def analyser_features(
+    df: pd.DataFrame,
+    uniquement_nouvelles: bool = False,
+    colonnes: Sequence[str] | None = None,
+) -> pd.DataFrame:
+    """Analyse d'attrition sur df_clean (cible encodée si besoin).
+
+    Par défaut : analyse complète (anciennes + nouvelles), puis une section
+    dédiée « nouvelles × anciennes ».
+    uniquement_nouvelles=True : saute l'analyse globale et ne garde que
+    les features métier + le croisement.
+    """
     if df is None or not isinstance(df, pd.DataFrame) or df.empty:
         print("❌ df_clean est vide ou introuvable. Lance d'abord le nettoyage / fusion.")
         return df
@@ -1715,15 +1937,33 @@ def analyser_features(df: pd.DataFrame) -> pd.DataFrame:
 
     df_travail = _encoder_cible(df, cible)
     print(f"Cible utilisée : '{cible}'  (0 = reste, 1 = part)")
-    analyser_correlations_vs_cible(df_travail, target_col=cible, nom="df_clean")
+
+    if colonnes is None and uniquement_nouvelles:
+        colonnes = _colonnes_features_metier_dans_df(df_travail)
+        if colonnes:
+            print("• Périmètre : nouvelles features métier uniquement")
+        else:
+            print("⚠️ Aucune feature métier trouvée dans le DataFrame → analyse complète.")
+            colonnes = None
+
+    nom = "nouvelles features" if colonnes is not None else "df_clean"
+    analyser_correlations_vs_cible(
+        df_travail, target_col=cible, nom=nom, colonnes=colonnes
+    )
+    comparer_nouvelles_et_anciennes(df_travail, target_col=cible, nom=nom)
     return df_travail
 
 
 def bouton_analyse_features(
     get_current_df: Callable[[], pd.DataFrame],
     set_current_df: Callable[[pd.DataFrame], None] | None = None,
+    uniquement_nouvelles: bool = False,
 ):
-    """Widget : analyser les features de df_clean."""
+    """Widget : analyse complète, plus la section nouvelles × anciennes.
+
+    uniquement_nouvelles=True : uniquement les features métier + le croisement.
+    Les autres appels à exploration.py ne passent pas par ce bouton.
+    """
     if widgets is None:
         raise ImportError("ipywidgets est requis pour bouton_analyse_features().")
 
@@ -1744,7 +1984,7 @@ def bouton_analyse_features(
         with sortie:
             clear_output(wait=True)
             df = get_current_df()
-            res = analyser_features(df)
+            res = analyser_features(df, uniquement_nouvelles=uniquement_nouvelles)
             if set_current_df is not None and res is not None:
                 set_current_df(res)
 

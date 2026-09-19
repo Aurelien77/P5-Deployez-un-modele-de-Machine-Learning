@@ -377,9 +377,43 @@ def evaluer_modeles(X_train, y_train, X_test, y_test, preprocessor, models=None,
             return "🟢 Bien équilibré"
 
     df_res['Diagnostic'] = df_res.apply(_diagnostic, axis=1)
-    df_res = df_res.sort_values("ROC_AUC_cv", ascending=False)
-    
+    df_res = trier_par_diagnostic_et_recall(df_res)
+
     return df_res, fitted_pipelines
+
+
+# Ordre d'affichage métier : d'abord les modèles sains, puis les biais.
+ORDRE_DIAGNOSTIC = {
+    "🟢 Bien équilibré": 0,
+    "🔴 Surapprentissage": 1,
+    "🟠 Sous-apprentissage": 2,
+    "🟣 Atypique (CV > Train)": 3,
+    "⚠️ Instable (Fort écart-type folds)": 4,
+}
+
+
+def _rang_diagnostic(valeur) -> int:
+    if valeur in ORDRE_DIAGNOSTIC:
+        return ORDRE_DIAGNOSTIC[valeur]
+    for libelle, rang in ORDRE_DIAGNOSTIC.items():
+        if isinstance(valeur, str) and libelle.split(" ", 1)[-1].lower() in valeur.lower():
+            return rang
+    return len(ORDRE_DIAGNOSTIC)
+
+
+def trier_par_diagnostic_et_recall(df_res, colonne_recall="Recall_test"):
+    """Bien équilibré d'abord (Recall desc), puis sur/sous-apprentissage (Recall desc)."""
+    df = df_res.copy()
+    if "Diagnostic" not in df.columns:
+        return df.sort_values(colonne_recall, ascending=False) if colonne_recall in df.columns else df
+    df["_rang_diag"] = df["Diagnostic"].map(_rang_diagnostic)
+    by = ["_rang_diag"]
+    ascending = [True]
+    if colonne_recall in df.columns:
+        by.append(colonne_recall)
+        ascending.append(False)
+    df = df.sort_values(by, ascending=ascending).drop(columns=["_rang_diag"])
+    return df
 
 
 # ----------------------------------------------------------------------
@@ -399,6 +433,16 @@ def afficher_resultats(df_res, titre="📊 Comparatif des performances des modè
 # ----------------------------------------------------------------------
 def get_objectifs_disponibles():
     return {
+        "diagnostic_recall": {
+            "label": "🩺 Diagnostic puis Recall (équilibré → sur/sous-apprentissage)",
+            "description": (
+                "Classe d'abord par diagnostic : Bien équilibré en haut, "
+                "puis Surapprentissage, puis Sous-apprentissage. "
+                "Dans chaque groupe, trie par Recall_test décroissant."
+            ),
+            "colonne": "Recall_test",
+            "tri": "diagnostic_recall",
+        },
         "recall_test": {
             "label": "🎯 Détecter un maximum de départs (Recall)",
             "description": "Priorise le Recall_test : on veut rater le moins de départs possible.",
@@ -430,22 +474,39 @@ def get_objectifs_disponibles():
 # ----------------------------------------------------------------------
 # 5ter. Stylisation dynamique
 # ----------------------------------------------------------------------
-def styliser_resultats(df_res, objectif_key="f1_test"):
+def styliser_resultats(df_res, objectif_key="diagnostic_recall"):
     objectifs = get_objectifs_disponibles()
-    objectif = objectifs.get(objectif_key, objectifs["f1_test"])
+    objectif = objectifs.get(objectif_key, objectifs["diagnostic_recall"])
     colonne_cible = objectif["colonne"]
 
-    df_trie = df_res.sort_values(colonne_cible, ascending=False)
+    if objectif.get("tri") == "diagnostic_recall":
+        df_trie = trier_par_diagnostic_et_recall(df_res, colonne_recall=colonne_cible)
+    else:
+        df_trie = df_res.sort_values(colonne_cible, ascending=False)
 
-    styled = (
-        df_trie.style
-        .format(precision=3)
-        .background_gradient(subset=[colonne_cible], cmap="Greens")
-    )
-    
-    if 'Ecart_Train_CV' in df_trie.columns:
-        styled = styled.background_gradient(subset=['Ecart_Train_CV'], cmap='RdYlGn_r')
-        
+    formatage = {col: "{:.3f}" for col in df_trie.select_dtypes(include="number").columns}
+    styled = df_trie.style.format(formatage)
+
+    if colonne_cible in df_trie.columns:
+        styled = styled.background_gradient(subset=[colonne_cible], cmap="Greens")
+
+    if "Ecart_Train_CV" in df_trie.columns:
+        styled = styled.background_gradient(subset=["Ecart_Train_CV"], cmap="RdYlGn_r")
+
+    if "Diagnostic" in df_trie.columns:
+        couleurs_diag = {
+            "🟢 Bien équilibré": "background-color: #d4edda; color: #155724; font-weight: 600;",
+            "🔴 Surapprentissage": "background-color: #f8d7da; color: #721c24; font-weight: 600;",
+            "🟠 Sous-apprentissage": "background-color: #ffe8cc; color: #7a3e00; font-weight: 600;",
+            "🟣 Atypique (CV > Train)": "background-color: #e8d5f5; color: #4a1c6b; font-weight: 600;",
+            "⚠️ Instable (Fort écart-type folds)": "background-color: #fff3cd; color: #856404; font-weight: 600;",
+        }
+
+        def _style_diag(serie):
+            return [couleurs_diag.get(v, "") for v in serie]
+
+        styled = styled.apply(_style_diag, subset=["Diagnostic"])
+
     return styled, objectif, df_trie
 
 
@@ -457,10 +518,10 @@ def interface_choix_objectif(df_res):
 
     dropdown_objectif = widgets.Dropdown(
         options=[(v["label"], k) for k, v in objectifs.items()],
-        value="f1_test",
+        value="diagnostic_recall",
         description="Objectif :",
         style={"description_width": "initial"},
-        layout=widgets.Layout(width="500px"),
+        layout=widgets.Layout(width="620px"),
     )
 
     out = widgets.Output()
@@ -469,13 +530,23 @@ def interface_choix_objectif(df_res):
         with out:
             clear_output()
             styled, objectif, df_trie = styliser_resultats(df_res, dropdown_objectif.value)
+            recap = ""
+            if "Diagnostic" in df_trie.columns:
+                counts = df_trie["Diagnostic"].value_counts()
+                recap = " | ".join(f"{k} : {int(v)}" for k, v in counts.items())
+            meilleur = df_trie.index[0]
+            score = df_trie.iloc[0][objectif["colonne"]]
+            diag_meilleur = (
+                df_trie.iloc[0]["Diagnostic"] if "Diagnostic" in df_trie.columns else ""
+            )
             display(HTML(
                 f"<div style='background-color:#eaf4ea;padding:10px;border-radius:6px;"
                 f"border:1px solid #c3e6cb;margin-bottom:8px;'>"
                 f"<b>{objectif['label']}</b><br>{objectif['description']}<br>"
-                f"<i>Tableau trié par {objectif['colonne']} décroissant. "
-                f"Meilleur modèle : {df_trie.index[0]} "
-                f"({objectif['colonne']} = {df_trie.iloc[0][objectif['colonne']]:.3f})</i>"
+                f"<i>Meilleur selon ce classement : {meilleur}"
+                f"{' — ' + diag_meilleur if diag_meilleur else ''} "
+                f"({objectif['colonne']} = {score:.3f})</i>"
+                f"{'<br><span style=\"color:#555\">Répartition : ' + recap + '</span>' if recap else ''}"
                 f"</div>"
             ))
             display(styled)
