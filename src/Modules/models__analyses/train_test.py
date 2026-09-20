@@ -101,7 +101,7 @@ def _construire_panneau(
         style={"description_width": "initial"},
     )
     btn_split = widgets.Button(
-        description="→→→→  Lancer le split train / test  ←←←←",
+        description="→→→→ 2 → Lancer le split train / test  ←←←←",
         button_style="success",
         icon="random",
         layout=widgets.Layout(width="300px", height="40px"),
@@ -187,7 +187,7 @@ def bouton_train_test(
     (taille test, stratify, seed, détail) et son bouton de split.
     """
     bouton_demarrer = widgets.Button(
-        description="Démarrer",
+        description="1 → Déployer",
         button_style="info",
         icon="play",
         layout=widgets.Layout(width="280px", height="40px"),
