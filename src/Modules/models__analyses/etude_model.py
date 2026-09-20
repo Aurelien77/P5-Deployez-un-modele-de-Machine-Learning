@@ -1168,18 +1168,17 @@ def interface_etude_modeles_etape():
         layout=widgets.Layout(width='300px', height='40px')
     )
 
-    tab_contents = [widgets.Output() for _ in range(9)]
+    tab_contents = [widgets.Output() for _ in range(8)]
     tab = widgets.Tab()
     tab.children = tab_contents
-    tab.set_title(0, "1. Probas & Erreurs")
-    tab.set_title(1, "2. Résidus & CV")
-    tab.set_title(2, "3. Importances")
-    tab.set_title(3, "4. Beeswarm SHAP")
-    tab.set_title(4, "5. Matrices de confusion")
-    tab.set_title(5, "6. Grille True vs Pred")
-    tab.set_title(6, "7. Corrélations & Pairplot")
-    tab.set_title(7, "8. ROC / Calibration / Seuil")
-    tab.set_title(8, "9. Précision–Rappel")
+    tab.set_title(0, "1. Probas")
+    tab.set_title(1, "2. Importances")
+    tab.set_title(2, "3. Beeswarm SHAP")
+    tab.set_title(3, "4. Matrices de confusion")
+    tab.set_title(4, "5. Grille True vs Pred")
+    tab.set_title(5, "6. Corrélations & Pairplot")
+    tab.set_title(6, "7. ROC / Calibration / Seuil")
+    tab.set_title(7, "8. Précision–Rappel")
 
     def on_eval_clicked(b):
         import sys
@@ -1245,30 +1244,17 @@ def interface_etude_modeles_etape():
         else:
             current_fitted_pipelines_eval = current_fitted_pipelines
 
-        # --- Onglet 0 : Probas & Erreurs ---
+        # --- Onglet 0 : Probas ---
         with tab.children[0]:
             clear_output()
-            print(f"--- 1. Distribution des probabilités & Erreurs [{dataset_label}] ---")
+            print(f"--- 1. Distribution des probabilités [{dataset_label}] ---")
             distribution_probabilites_par_type(
                 current_fitted_pipelines, current_df_res, X_train, y_train, X_test, y_test,
                 threshold=0.5, nom_modele=top_model_names
             )
-            for nom_modele in top_model_names:
-                analyser_distribution_erreurs(current_fitted_pipelines_eval[nom_modele], X_eval, y_eval, nom_modele=f"{nom_modele} ({dataset_label})")
 
-        # --- Onglet 1 : Résidus & CV ---
+        # --- Onglet 1 : Importances ---
         with tab.children[1]:
-            clear_output()
-            print(f"--- 2. Diagnostic surapprentissage / sous-apprentissage ---")
-            diagnostiquer_overfitting_tableau(current_df_res)
-            print(f"\n--- 3. Train vs CV vs Test ---")
-            comparer_train_test(current_df_res, top_model_names=top_model_names)
-            print(f"\n--- 4. Analyse des résidus [{dataset_label}] ---")
-            for nom_modele in top_model_names:
-                analyser_residus(current_fitted_pipelines_eval[nom_modele], X_eval, y_eval, nom_modele=f"{nom_modele} ({dataset_label})")
-
-        # --- Onglet 2 : Importances ---
-        with tab.children[2]:
             clear_output()
             print(f"--- 4. Importances par permutation ({dataset_label}) ---")
             importances_pivot = importance_permutation_tous_modeles(
@@ -1284,8 +1270,8 @@ def interface_etude_modeles_etape():
                 nom_modele=f"{meilleur_modele} ({dataset_label})", scoring='roc_auc'
             )
 
-        # --- Onglet 3 : Beeswarm SHAP (NOUVEL ONGLET) ---
-        with tab.children[3]:
+        # --- Onglet 2 : Beeswarm SHAP ---
+        with tab.children[2]:
             clear_output()
             if mode_donnees == 'cv':
                 print("ℹ️ SHAP n'est pas calculable par pli de CV (chaque pli entraîne un modèle "
@@ -1310,8 +1296,8 @@ def interface_etude_modeles_etape():
                 except Exception as exc:
                     print(f"⚠️ SHAP local impossible pour {nom_modele} : {exc}")
 
-        # --- Onglet 4 : Matrices de confusion ---
-        with tab.children[4]:
+        # --- Onglet 3 : Matrices de confusion ---
+        with tab.children[3]:
             clear_output()
             print(f"--- 6. Matrices de confusion [{dataset_label}] ---")
             for nom_modele in top_model_names:
@@ -1319,20 +1305,20 @@ def interface_etude_modeles_etape():
                 y_pred = pipeline.predict(X_eval)
                 afficher_matrice_confusion(y_eval, y_pred, nom_modele=f"{nom_modele} ({dataset_label})")
 
-        # --- Onglet 5 : Grille True vs Pred ---
-        with tab.children[5]:
+        # --- Onglet 4 : Grille True vs Pred ---
+        with tab.children[4]:
             clear_output()
             print(f"--- 7. Grille comparative Probabilités vs Réel [{dataset_label}] ---")
             afficher_grille_true_vs_pred(current_fitted_pipelines_eval, top_model_names, X_eval, y_eval, ncols=2)
 
-        # --- Onglet 6 : Corrélations & Pairplot ---
-        with tab.children[6]:
+        # --- Onglet 5 : Corrélations & Pairplot ---
+        with tab.children[5]:
             clear_output()
             print(f"--- 8. Analyse des corrélations & Pairplot [{dataset_label}] ---")
             analyser_correlations_features(X_eval, seuil_pearson=0.85)
 
-        # --- Onglet 7 : ROC / PR / Calibration / Seuil ---
-        with tab.children[7]:
+        # --- Onglet 6 : ROC / Calibration / Seuil ---
+        with tab.children[6]:
             clear_output()
             print(f"--- 9. Courbe ROC [{dataset_label}] ---")
             tracer_courbe_roc(current_fitted_pipelines_eval, X_eval, y_eval, model_names=top_model_names)
@@ -1348,7 +1334,7 @@ def interface_etude_modeles_etape():
             for nom_modele in top_model_names:
                 analyser_seuil_optimal(current_fitted_pipelines_eval[nom_modele], X_eval, y_eval, nom_modele=f"{nom_modele} ({dataset_label})")
 
-        with tab.children[8]:
+        with tab.children[7]:
             clear_output()
             print(f"--- Courbe Précision–Rappel [{dataset_label}] ---")
             print("Axe X = rappel (départs attrapés). Axe Y = précision (alertes justes).")

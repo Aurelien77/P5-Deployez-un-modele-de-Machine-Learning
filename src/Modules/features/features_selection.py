@@ -9,6 +9,7 @@ Les unités (€, %, ans, 0/1, texte, niveau) viennent de new_features.py
 from __future__ import annotations
 
 import importlib
+from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 import pandas as pd
@@ -22,6 +23,93 @@ except Exception:  # pragma: no cover
 
     def clear_output(wait: bool = False) -> None:
         pass
+
+
+def _chemins_candidats_xy() -> list[Path]:
+    """Racine projet : cwd, parents, puis parents de ce fichier."""
+    racines: list[Path] = []
+    here = Path.cwd().resolve()
+    racines.extend([here, *here.parents])
+    try:
+        module_dir = Path(__file__).resolve().parent
+        racines.extend([module_dir, *module_dir.parents])
+    except Exception:
+        pass
+    vus: set[Path] = set()
+    uniques: list[Path] = []
+    for r in racines:
+        if r not in vus:
+            vus.add(r)
+            uniques.append(r)
+    return uniques
+
+
+def trouver_fichiers_xy(
+    chemin_x: str | Path | None = None,
+    chemin_y: str | Path | None = None,
+) -> tuple[Path, Path]:
+    """Localise X.csv et y.csv (chemins fournis ou racine du projet)."""
+    if chemin_x and chemin_y:
+        px, py = Path(chemin_x), Path(chemin_y)
+        if px.is_file() and py.is_file():
+            return px, py
+        raise FileNotFoundError(f"CSV introuvables : {px} / {py}")
+
+    for racine in _chemins_candidats_xy():
+        px, py = racine / "X.csv", racine / "y.csv"
+        if px.is_file() and py.is_file():
+            return px, py
+    raise FileNotFoundError(
+        "X.csv et y.csv introuvables. Place-les à la racine du projet "
+        "(à côté de df_clean.csv) ou passe chemin_x / chemin_y."
+    )
+
+
+def charger_xy_vers_df(
+    chemin_x: str | Path | None = None,
+    chemin_y: str | Path | None = None,
+    target_col: str = "a_quitte_l_entreprise",
+) -> pd.DataFrame:
+    """Reconstitue un DataFrame type df_clean : toutes les features + la cible.
+
+    Sert au panneau ON/OFF et au split quand on repart des CSV
+    plutôt que de df_clean en mémoire.
+    """
+    px, py = trouver_fichiers_xy(chemin_x, chemin_y)
+    X = pd.read_csv(px)
+    y_brut = pd.read_csv(py)
+    y = y_brut.squeeze()
+    if isinstance(y, pd.DataFrame):
+        if target_col in y.columns:
+            y = y[target_col]
+        else:
+            y = y.iloc[:, 0]
+    if getattr(y, "name", None) in (None, 0, "0"):
+        y = pd.Series(y.to_numpy(), name=target_col)
+    else:
+        y = pd.Series(y.to_numpy(), name=target_col)
+
+    if len(X) != len(y):
+        raise ValueError(
+            f"X et y n'ont pas le même nombre de lignes ({len(X)} vs {len(y)})."
+        )
+    if target_col in X.columns:
+        df = X.copy()
+        df[target_col] = y.to_numpy()
+    else:
+        df = X.copy()
+        df[target_col] = y.to_numpy()
+    print(f"CSV chargés : {px.name} + {py.name} → {df.shape[0]} lignes, {df.shape[1]} colonnes")
+    return df
+
+
+def get_df_depuis_xy_csv(target_col: str = "a_quitte_l_entreprise"):
+    """Callback prêt à passer à bouton_features_selection / bouton_train_test."""
+
+    def _get():
+        return charger_xy_vers_df(target_col=target_col)
+
+    return _get
 
 
 GROUP_TITLES = {
@@ -460,7 +548,7 @@ def obtenir_variables_selectionnees(
 
 
 def bouton_features_selection(
-    get_df_callback,
+    get_df_callback=None,
     on_demarrer_callback=None,
     target_col: str = "a_quitte_l_entreprise",
     classification: Mapping[str, list[str]] | None = None,
@@ -469,8 +557,15 @@ def bouton_features_selection(
         [Mapping[str, list[tuple[str, widgets.ToggleButton]]]], None
     ]
     | None = None,
+    depuis_xy_csv: bool = False,
 ) -> widgets.VBox:
-    """Crée un bouton 'Afficher le panneau' et gère le retour de var_buttons."""
+    """Crée un bouton 'Afficher le panneau' et gère le retour de var_buttons.
+
+    depuis_xy_csv=True : lit X.csv + y.csv à la racine du projet
+    (plus besoin de df_clean en mémoire).
+    """
+    if depuis_xy_csv or get_df_callback is None:
+        get_df_callback = get_df_depuis_xy_csv(target_col=target_col)
     bouton_afficher = widgets.Button(
         description="Afficher le panneau",
         button_style="info",
