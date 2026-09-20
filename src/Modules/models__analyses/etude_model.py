@@ -1296,14 +1296,19 @@ def interface_etude_modeles_etape():
                 # SHAP utilise toujours le vrai pipeline entraîné (pas le proxy CV)
                 tracer_beeswarm_shap(current_fitted_pipelines[nom_modele], X_eval, nom_modele=f"{nom_modele} ({dataset_label})")
 
-            print(f"\n--- Graphique SHAP local (exemple sur la 1ère observation) [{dataset_label}] ---")
-            meilleur_modele_shap = top_model_names[0]
-            tracer_shap_local(
-                current_fitted_pipelines[meilleur_modele_shap], X_eval, index=0,
-                nom_modele=f"{meilleur_modele_shap} ({dataset_label})"
-            )
-            # Astuce : appelez tracer_shap_local(pipeline, X_eval, index=42, ...)
-            # pour expliquer n'importe quelle autre observation précise.
+            print(f"\n--- Graphique SHAP local — observation n°0, chaque modèle du Top N [{dataset_label}] ---")
+            print("Même salarié, un waterfall par modèle.")
+            for nom_modele in top_model_names:
+                print(f"\nCalcul SHAP local : {nom_modele} (observation 0)...")
+                try:
+                    tracer_shap_local(
+                        current_fitted_pipelines[nom_modele],
+                        X_eval,
+                        index=0,
+                        nom_modele=f"{nom_modele} ({dataset_label})",
+                    )
+                except Exception as exc:
+                    print(f"⚠️ SHAP local impossible pour {nom_modele} : {exc}")
 
         # --- Onglet 4 : Matrices de confusion ---
         with tab.children[4]:

@@ -570,34 +570,6 @@ def classement_correlations(
     return paires.sort_values("|r|", ascending=False).reset_index(drop=True)
 
 
-def _legende_sous_heatmaps(fig=None) -> None:
-    """Légende affichée sous les graphiques (texte notebook, sans chevaucher les axes)."""
-    del fig
-    print(
-        "\n--- À quoi servent Pearson et Spearman ? ---\n"
-        "Les deux mesurent un lien entre -1 et +1 :\n"
-        "  +1  les deux montent ensemble\n"
-        "   0  pas de lien monotone\n"
-        "  -1  l'une monte quand l'autre descend\n"
-        "\n"
-        "Pearson  r  —  « Est-ce que ça monte comme une droite ? »\n"
-        "  Utilise les valeurs brutes (€, années, notes…). Sensible aux extrêmes\n"
-        "  (un très haut salaire tire r). Utile pour les variables vraiment continues.\n"
-        "\n"
-        "Spearman  ρ  —  « Est-ce que l’ordre est le même ? »\n"
-        "  Remplace chaque valeur par son rang (1er, 2e, 3e…). Ne dépend plus de\n"
-        "  l’échelle. Plus robuste si le lien est courbe mais monotone\n"
-        "  (ex. le départ baisse vite au début de l’ancienneté, puis plus lentement).\n"
-        "\n"
-        "Comment lire les deux matrices côte à côte\n"
-        "  • Même case rouge / bleue des deux côtés → lien clair et plutôt droit.\n"
-        "  • |ρ| nettement plus grand que |r| → le lien existe mais n’est pas une droite.\n"
-        "  • Case presque blanche → peu d’association.\n"
-        "  • La ligne / colonne de la cible = « cette variable va-t-elle avec le départ ? »\n"
-        "\n"
-        "Ce n’est pas une cause : âge, grade et salaire peuvent bouger ensemble."
-    )
-
 
 def _afficher_classement_et_barres(
     classement: pd.DataFrame,
@@ -694,11 +666,11 @@ def matrice_correlation(
     fig.suptitle(f"Matrices de corrélation — {nom}", fontsize=13)
     fig.tight_layout()
     plt.show()
-    _legende_sous_heatmaps()
+   
 
     classement = classement_correlations(corr_p, corr_s)
     _afficher_classement_et_barres(classement, nom, max_paires_barchart)
-    _plot_kde_paires_features(df_q, classement)
+ 
     
     # Ajout pour afficher la matrice de nuages pour ce DataFrame
     top_vars = df_q.columns[:6].tolist()
@@ -794,50 +766,6 @@ def _plot_kde_vs_cible(df: pd.DataFrame, colonnes: list[str], cible: str, ncols:
         )
 
 
-def _plot_kde_paires_features(
-    df: pd.DataFrame,
-    classement: pd.DataFrame | None = None,
-    max_paires: int = 8,
-) -> None:
-    """Un seul graphique : KDE de toutes les quantitatives (z-score)."""
-    del classement, max_paires
-    cols = [c for c in df.columns if _vers_numerique(df[c]).nunique(dropna=True) >= 4]
-    if not cols:
-        return
-
-    print("\n--- KDE de toutes les quantitatives (échelle standardisée) ---")
-    fig, ax = plt.subplots(figsize=(13, 6))
-    nb_traces = 0
-    for col in cols:
-        x = _vers_numerique(df[col]).dropna()
-        if not _serie_kde_ok(x, min_obs=20):
-            continue
-        std = float(x.std())
-        if std == 0:
-            continue
-        z = (x - float(x.mean())) / std
-        sns.kdeplot(
-            z,
-            ax=ax,
-            fill=True,
-            alpha=0.10,
-            linewidth=2,
-            label=col,
-            warn_singular=False,
-        )
-        nb_traces += 1
-
-    if nb_traces == 0:
-        plt.close(fig)
-        return
-
-    ax.set_title("Distribution de toutes les variables étudiées", fontsize=13)
-    ax.set_xlabel("Valeur standardisée (z-score) — même échelle pour toutes")
-    ax.set_ylabel("Densité")
-    _poser_legende(ax, fontsize=8, ncol=2, loc="upper right")
-    ax.grid(alpha=0.25)
-    fig.tight_layout()
-    plt.show()
 
 
 def _plot_taux_depart_qualitatif(df: pd.DataFrame, colonnes: list[str], cible: str, ncols: int = 3) -> None:
@@ -910,95 +838,37 @@ def _matrices_pearson_spearman(
     )
     fig.tight_layout()
     plt.show()
-    _legende_sous_heatmaps()
     return {"pearson": corr_p, "spearman": corr_s}
 
 
-def _detecter_paires_imbriquees(
-    df: pd.DataFrame,
-    colonnes: Sequence[str],
-    seuil: float = 0.999,
-    min_obs: int = 20,
-) -> list[tuple[str, str]]:
-    """Détecte les paires (petite, grande) où petite <= grande quasi systématiquement.
-
-    Ce n'est PAS une corrélation statistique : c'est une contrainte structurelle
-    (ex. annees_dans_l_entreprise <= annee_experience_totale). Une telle paire,
-    tracée brute dans un nuage de points, produit toujours un triangle coupé net
-    plutôt qu'un vrai nuage — l'information utile est dans le ratio ou l'écart,
-    pas dans les valeurs brutes.
-    """
-    paires: list[tuple[str, str]] = []
-    cols = list(colonnes)
-    for i, a in enumerate(cols):
-        for b in cols[i + 1:]:
-            xa = _vers_numerique(df[a])
-            xb = _vers_numerique(df[b])
-            masque = xa.notna() & xb.notna()
-            if int(masque.sum()) < min_obs:
-                continue
-            xa_m, xb_m = xa[masque], xb[masque]
-            if xa_m.equals(xb_m):
-                continue
-            taux_a_sous_b = float((xa_m <= xb_m).mean())
-            taux_b_sous_a = float((xb_m <= xa_m).mean())
-            if taux_a_sous_b >= seuil:
-                paires.append((a, b))  # a (petite) <= b (grande)
-            elif taux_b_sous_a >= seuil:
-                paires.append((b, a))
-    return paires
+_LIBELLES_AXES_NUAGES = {
+    "nombre_participation_pee": "Participations\nPEE",
+    "nb_formations_suivies": "Formations\nsuivies",
+    "distance_domicile_travail": "Distance\ndomicile–travail",
+    "niveau_education": "Niveau\nd'éducation",
+    "annees_depuis_la_derniere_promotion": "Ans depuis\nla promotion",
+    "annees_sous_responsable_actuel": "Ans sous\nle responsable",
+    "annees_dans_l_entreprise": "Ans dans\nl'entreprise",
+    "annees_dans_le_poste_actuel": "Ans dans\nle poste",
+    "annee_experience_totale": "Expérience\ntotale (ans)",
+    "annees_experience_totale": "Expérience\ntotale (ans)",
+    "revenu_mensuel": "Revenu\nmensuel",
+    "nombre_experiences_precedentes": "Expériences\nprécédentes",
+    "heure_supplementaires": "Heures\nsupplémentaires",
+    "niveau_hierarchique_poste": "Niveau\nhiérarchique",
+    "satisfaction_employee_environnement": "Satisfaction\nenvironnement",
+    "satisfaction_employee_nature_travail": "Satisfaction\ntravail",
+    "satisfaction_employee_equilibre_pro_perso": "Équilibre\npro / perso",
+}
 
 
-def _remplacer_paires_imbriquees(
-    df: pd.DataFrame,
-    colonnes: Sequence[str],
-    seuil: float = 0.999,
-) -> tuple[pd.DataFrame, list[str], list[tuple[str, str]]]:
-    """Remplace chaque paire imbriquée détectée par un ratio et un écart.
-
-    Retourne (data_transformee, colonnes_finales, paires_detectees).
-    Les variables non concernées par une contrainte restent inchangées.
-    """
-    cols = list(colonnes)
-    paires = _detecter_paires_imbriquees(df, cols, seuil=seuil)
-
-    data = pd.DataFrame(index=df.index)
-    colonnes_finales: list[str] = []
-    colonnes_remplacees: set[str] = set()
-
-    for petite, grande in paires:
-        xp = _vers_numerique(df[petite])
-        xg = _vers_numerique(df[grande])
-        nom_ratio = f"ratio_{petite}_sur_{grande}"
-        nom_ecart = f"ecart_{grande}_moins_{petite}"
-        data[nom_ratio] = (xp / xg.replace(0, np.nan)).round(3)
-        data[nom_ecart] = (xg - xp).round(3)
-        colonnes_finales += [nom_ratio, nom_ecart]
-        colonnes_remplacees.add(petite)
-        colonnes_remplacees.add(grande)
-
-    for c in cols:
-        if c in colonnes_remplacees:
-            continue
-        data[c] = _vers_numerique(df[c])
-        colonnes_finales.append(c)
-
-    return data, colonnes_finales, paires
-
-
-def _libelle_axe(nom: str, largeur: int = 16) -> str:
-    """Libellé court pour les axes d'un pairplot (noms techniques inchangés)."""
-    import re
+def _libelle_axe(nom: str, largeur: int = 18) -> str:
+    """Libellé court et lisible pour les axes du pairplot."""
     import textwrap
 
-    m_ratio = re.match(r"^ratio_(.+)_sur_(.+)$", nom)
-    if m_ratio:
-        nom = f"{m_ratio.group(1)} / {m_ratio.group(2)}"
-    else:
-        m_ecart = re.match(r"^ecart_(.+)_moins_(.+)$", nom)
-        if m_ecart:
-            nom = f"{m_ecart.group(1)} − {m_ecart.group(2)}"
-    nom = nom.replace("_", " ")
+    if nom in _LIBELLES_AXES_NUAGES:
+        return _LIBELLES_AXES_NUAGES[nom]
+    nom = nom.replace("_", " ").strip()
     return "\n".join(textwrap.wrap(nom, width=largeur)) or nom
 
 
@@ -1008,38 +878,18 @@ def plot_matrice_nuages(
     cible: str | None = None,
     max_vars: int = 6,
     nom: str = "corrélations",
-    remplacer_contraintes: bool = True,
 ) -> None:
-    """Matrice de nuages (pairplot) : diagonale = distribution, hors diagonale = nuage.
-
-    Si ``remplacer_contraintes`` est True (par défaut), toute paire de variables
-    imbriquées (petite <= grande, ex. ancienneté poste <= ancienneté entreprise)
-    est remplacée par un ratio et un écart : ça évite le triangle coupé net,
-    qui est un artefact structurel et non un vrai nuage de corrélation.
-    """
+    """Matrice de nuages (pairplot) : diagonale = distribution, hors diagonale = nuage."""
     cols_brutes = [c for c in colonnes if c in df.columns]
     if cible and cible in cols_brutes:
         cols_brutes = [c for c in cols_brutes if c != cible]
     if len(cols_brutes) < 2:
         return
 
-    if remplacer_contraintes:
-        data, cols, paires = _remplacer_paires_imbriquees(df, cols_brutes)
-        if paires:
-            print(
-                f"\n--- Paires imbriquées détectées ({nom}) : remplacées par ratio/écart ---"
-            )
-            for petite, grande in paires:
-                print(f"  • {petite} ≤ {grande}  →  ratio_{petite}_sur_{grande}, ecart_{grande}_moins_{petite}")
-        if cible and cible in df.columns:
-            data[cible] = df[cible]
-    else:
-        data = df[cols_brutes + ([cible] if cible and cible in df.columns else [])].copy()
-        for c in cols_brutes:
-            data[c] = _vers_numerique(data[c])
-        cols = cols_brutes
-
-    cols = cols[:max_vars]
+    data = df[cols_brutes + ([cible] if cible and cible in df.columns else [])].copy()
+    for c in cols_brutes:
+        data[c] = _vers_numerique(data[c])
+    cols = cols_brutes[:max_vars]
     data = data[cols + ([cible] if cible and cible in data.columns else [])].dropna()
     if len(data) < 20 or data[cols].shape[1] < 2:
         print("(Matrice de nuages : pas assez de données.)")
@@ -1047,13 +897,13 @@ def plot_matrice_nuages(
 
     hue = None
     if cible and cible in data.columns:
-        data["_statut"] = data[cible].map(_label_statut)
-        hue = "_statut"
+        data["Départ"] = data[cible].map(_label_statut)
+        hue = "Départ"
 
     print(f"\n--- Matrice de nuages ({nom}) : {', '.join(cols)} ---")
     print("Diagonale = répartition de chaque variable. Hors diagonale = lien deux à deux.")
     if hue:
-        print("Couleur = Reste / Part.")
+        print("Couleur orange = Part.  Couleur bleue-gris = Reste.")
 
     alias = {c: _libelle_axe(c) for c in cols}
     data_plot = data.rename(columns=alias)
@@ -1065,14 +915,24 @@ def plot_matrice_nuages(
         data_plot,
         vars=vars_plot,
         hue=hue,
+        hue_order=["Reste", "Part"] if hue else None,
         corner=False,
         diag_kind="hist",
         plot_kws={"alpha": 0.35, "s": 18, "edgecolor": "none"},
         diag_kws={"alpha": 0.7},
-        height=2.6,
+        height=2.7,
+        palette={"Reste": "#7BA3C9", "Part": "#E67E22"} if hue else None,
     )
+    leg = getattr(grid, "_legend", None) or getattr(grid, "legend", None)
+    if leg is not None:
+        leg.set_title("Départ")
+        try:
+            leg.set_bbox_to_anchor((1.02, 1))
+        except Exception:
+            pass
+        leg.set_frame_on(True)
     for ax in grid.axes[-1, :]:
-        plt.setp(ax.get_xticklabels(), rotation=25, ha="right", fontsize=7)
+        plt.setp(ax.get_xticklabels(), rotation=0, ha="center", fontsize=7)
         ax.set_xlabel(ax.get_xlabel(), fontsize=8)
     for ax in grid.axes[:, 0]:
         plt.setp(ax.get_yticklabels(), fontsize=7)
@@ -1080,9 +940,9 @@ def plot_matrice_nuages(
     for ax in grid.axes.ravel():
         if ax is not None:
             ax.tick_params(labelsize=7)
-    grid.fig.suptitle(f"Nuages de points — {nom}", y=1.03, fontsize=13)
+    grid.fig.suptitle(f"Nuages de points — {nom}", y=1.02, fontsize=13)
     grid.fig.tight_layout()
-    grid.fig.subplots_adjust(top=0.92, bottom=0.12, left=0.12)
+    grid.fig.subplots_adjust(top=0.93, bottom=0.10, left=0.10, right=0.88)
     plt.show()
 
 
