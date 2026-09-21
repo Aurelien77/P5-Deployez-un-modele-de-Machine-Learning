@@ -171,23 +171,26 @@ def interface_analyse_shap():
         button_style=''
     )
 
-    instance_selector = widgets.BoundedIntText(
-        value=0,
-        min=0,
-        max=10**6,
-        step=1,
-        description="N° observation (X_test) :",
+    fiches_multi = widgets.SelectMultiple(
+        options=[(f"n° {i}", i) for i in range(20)],
+        value=(0,),
+        description="Fiches :",
         style={'description_width': 'initial'},
-        layout=widgets.Layout(width='260px')
+        layout=widgets.Layout(width="240px", height="160px"),
     )
-
     instance_hint = widgets.HTML(
-        "<i>Index de la ligne dans X_test (0 = première ligne).</i>"
+        "<i>Ctrl+clic pour plusieurs fiches. n° 0 = 1re ligne de X_test.</i>"
     )
+    output_local = widgets.Output()
+    _cache_shap = {"items": []}
 
-    local_options_box = widgets.HBox(
-        [instance_selector, instance_hint],
-        layout=widgets.Layout(margin='5px 0px', display='none')
+    local_options_box = widgets.VBox(
+        [
+            widgets.HTML("<span style='color:#555'>Salariés à expliquer (choix multiple) :</span>"),
+            fiches_multi,
+            instance_hint,
+        ],
+        layout=widgets.Layout(margin="5px 0px", display="none"),
     )
 
     def on_analysis_type_change(change):
@@ -211,7 +214,9 @@ def interface_analyse_shap():
             main_ns = sys.modules['__main__'].__dict__
             if "X_test" in main_ns:
                 nb_lignes = len(main_ns["X_test"])
-                instance_selector.max = max(nb_lignes - 1, 0)
+                deja = tuple(i for i in (fiches_multi.value or ()) if i < nb_lignes)
+                fiches_multi.options = [(f"n° {i}", i) for i in range(nb_lignes)]
+                fiches_multi.value = deja if deja else ((0,) if nb_lignes else ())
         except Exception:
             pass
 
@@ -337,6 +342,45 @@ def interface_analyse_shap():
         shap.plots.waterfall(shap_values_locaux, show=True)
         plt.close()
 
+    def _indices_a_afficher():
+        choisis = [int(i) for i in (fiches_multi.value or ())]
+        return choisis if choisis else [0]
+
+    def _afficher_locaux_cache(indices=None):
+        items = _cache_shap.get("items") or []
+        if not items:
+            with output_local:
+                clear_output()
+                print("Lance d'abord l'analyse (Locale ou Globale + Locale).")
+            return
+        if indices is None:
+            indices = _indices_a_afficher()
+        n = items[0]["n"]
+        indices = [i for i in indices if 0 <= i < n]
+        if not indices:
+            indices = [0]
+        with output_local:
+            clear_output(wait=True)
+            print(f"Fiches {indices} — change la sélection dans la liste pour d'autres salariés.")
+            for idx in indices:
+                for item in items:
+                    try:
+                        _analyse_locale(
+                            item["shap_values"],
+                            item["pipeline"],
+                            item["X"],
+                            item["feature_names"],
+                            idx,
+                        )
+                    except Exception as e:
+                        print(f"   ⚠️ {item['name']} fiche {idx} : {e}")
+
+    def _on_multi_change(change):
+        if change.get("name") == "value" and _cache_shap.get("items"):
+            _afficher_locaux_cache(list(change["new"] or ()))
+
+    fiches_multi.observe(_on_multi_change, names="value")
+
     def run_shap_analysis(models_to_run):
         with output_shap:
             clear_output()
@@ -370,9 +414,9 @@ def interface_analyse_shap():
             mode = analysis_type.value
             faire_globale = mode in (MODE_GLOBALE, MODE_LES_DEUX)
             faire_locale = mode in (MODE_LOCALE, MODE_LES_DEUX)
-            idx_local = instance_selector.value
 
             print(f"🚀 Lancement de l'analyse SHAP ({mode}) pour : {list(models_to_run)}...\n")
+            _cache_shap["items"] = []
 
             for model_name in models_to_run:
                 if model_name not in current_fitted_pipelines:
@@ -447,13 +491,25 @@ def interface_analyse_shap():
                     except Exception as e:
                         print(f"   ⚠️ Échec de l'analyse globale pour {model_name} (Erreur : {e})")
                         traceback.print_exc()
-
                 if faire_locale:
-                    try:
-                        _analyse_locale(shap_values, pipeline, current_X_test, feature_names, idx_local)
-                    except Exception as e:
-                        print(f"   ⚠️ Échec de l'analyse locale pour {model_name} (Erreur : {e})")
-                        traceback.print_exc()
+                    _cache_shap["items"].append(
+                        {
+                            "name": model_name,
+                            "shap_values": shap_values,
+                            "pipeline": pipeline,
+                            "X": current_X_test,
+                            "feature_names": feature_names,
+                            "n": len(current_X_test),
+                        }
+                    )
+
+            if faire_locale and _cache_shap["items"]:
+                n_fiches = _cache_shap["items"][0]["n"]
+                print(
+                    f"\n🔍 Waterfalls : choisis une ou plusieurs fiches dans la liste "
+                    f"({n_fiches} salariés)."
+                )
+                _afficher_locaux_cache()
 
             print("\n✅ Analyse SHAP terminée !")
 
@@ -482,5 +538,7 @@ def interface_analyse_shap():
         analysis_type,
         local_options_box,
         widgets.HBox([btn_all, btn_selected], layout=widgets.Layout(grid_gap='10px', margin='10px 0px')),
-        output_shap
+        output_shap,
+        widgets.HTML("<b>Fiches une par une (local)</b>"),
+        output_local,
     ])

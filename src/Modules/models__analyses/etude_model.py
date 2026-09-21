@@ -510,13 +510,32 @@ def plot_importance_grille(importances_pivot, top_n=15, ncols=2, scoring='f1', t
 # ----------------------------------------------------------------------
 # 6. Graphique Beeswarm SHAP (Nouveau)
 # ----------------------------------------------------------------------
+_PREFIXES_PREPROC = (
+    "num_nonlin__", "num_lin__", "num_nonlin_", "num_lin_",
+    "ratios__", "ratios_",
+    "bool__", "bool_",
+    "cat__", "cat_",
+    "num__",
+)
+
+
+def _libeller_nom_shap(nom: str) -> str:
+    """Enlève num_lin_ / cat_ / bool_ / ratios_ pour un libellé lisible."""
+    s = str(nom)
+    for prefixe in _PREFIXES_PREPROC:
+        if s.startswith(prefixe):
+            s = s[len(prefixe):]
+            break
+    return s.replace("__", " | ")
+
+
 def _noms_features_preprocesseur(preprocessor, X_transforme) -> list[str]:
-    """Noms après ColumnTransformer (num_lin__age, cat__poste_x_niveau_...)."""
+    """Noms après ColumnTransformer, sans préfixe technique."""
     n = X_transforme.shape[1]
     try:
         noms = list(preprocessor.get_feature_names_out())
         if len(noms) == n:
-            return [str(n_) for n_ in noms]
+            return [_libeller_nom_shap(n_) for n_ in noms]
     except Exception:
         pass
     return [f"feature_{i}" for i in range(n)]
@@ -606,11 +625,13 @@ def tracer_beeswarm_shap(pipeline, X_eval, nom_modele="Modèle", max_display=15)
         plt.title(f"Graphique Beeswarm SHAP — {nom_modele}", fontsize=12, fontweight='bold', pad=15)
         plt.tight_layout()
         plt.show()
+        return shap_values, X_transforme, feature_names
     except Exception as e:
         print(f"❌ Échec de la génération SHAP ({nom_modele}) : {e}")
+        return None
 
 
-def tracer_shap_local(pipeline, X_eval, index=0, nom_modele="Modèle", max_display=15, type_graphique="waterfall"):
+def tracer_shap_local(pipeline, X_eval, index=0, nom_modele="Modèle", max_display=15, type_graphique="waterfall", shap_pack=None):
     """
     Génère une explication SHAP LOCALE, c'est-à-dire pour une seule observation
     (une ligne de X_eval), identifiée par sa position `index`.
@@ -625,9 +646,14 @@ def tracer_shap_local(pipeline, X_eval, index=0, nom_modele="Modèle", max_displ
         Un seul index -> waterfall (ou force plot). Une liste -> force plot
         empilé sur plusieurs observations.
     type_graphique : "waterfall" ou "force"
+    shap_pack : tuple optionnel (shap_values, X_transforme, feature_names)
+        Si fourni, on ne recalcule pas SHAP.
     """
     try:
-        shap_values, X_transforme, feature_names = _calculer_shap_values(pipeline, X_eval, nom_modele)
+        if shap_pack is not None:
+            shap_values, X_transforme, feature_names = shap_pack
+        else:
+            shap_values, X_transforme, feature_names = _calculer_shap_values(pipeline, X_eval, nom_modele)
 
         if isinstance(index, (list, tuple, np.ndarray)):
             # Plusieurs observations à la fois -> force plot empilé
@@ -1220,6 +1246,19 @@ def interface_etude_modeles_etape():
         style={'description_width': 'initial'},
         layout=widgets.Layout(width='260px')
     )
+    shap_fiches_text = widgets.Text(
+        value="0",
+        description="Fiches SHAP local :",
+        placeholder="0  ou  0, 4, 12",
+        style={'description_width': 'initial'},
+        layout=widgets.Layout(width='320px'),
+    )
+    btn_shap_local = widgets.Button(
+        description="Maj SHAP local seul",
+        button_style="info",
+        layout=widgets.Layout(width="180px", height="32px"),
+        tooltip="Ne recalcule pas les autres onglets. Utilise le dernier SHAP en cache.",
+    )
 
     btn_eval = widgets.Button(
         description="🚀 Charger / Actualiser les analyses",
@@ -1228,8 +1267,61 @@ def interface_etude_modeles_etape():
     )
 
     tab_contents = [widgets.Output() for _ in range(8)]
+    out_shap_local = widgets.Output()
     tab = widgets.Tab()
-    tab.children = tab_contents
+    tab_contents_affiches = list(tab_contents)
+    tab_contents_affiches[2] = widgets.VBox([tab_contents[2], out_shap_local])
+    tab.children = tab_contents_affiches
+    _etat_shap = {"pack": {}, "X": None, "models": [], "label": "", "pipelines": {}}
+
+    def _parser_fiches_shap(n_lignes):
+        fiches = []
+        for morceau in str(shap_fiches_text.value or "0").replace(";", ",").split(","):
+            morceau = morceau.strip()
+            if not morceau:
+                continue
+            try:
+                idx = int(morceau)
+            except ValueError:
+                continue
+            if 0 <= idx < n_lignes:
+                fiches.append(idx)
+        if not fiches:
+            fiches = [0]
+        return list(dict.fromkeys(fiches))
+
+    def _dessiner_shap_local(_=None):
+        X_eval = _etat_shap.get("X")
+        if X_eval is None:
+            with out_shap_local:
+                clear_output()
+                print("Lance d'abord « Charger / Actualiser les analyses » (une fois).")
+            return
+        fiches_shap = _parser_fiches_shap(len(X_eval))
+        label = _etat_shap.get("label", "")
+        with out_shap_local:
+            clear_output()
+            print(
+                f"--- SHAP local [{label}] — fiches {fiches_shap} "
+                "(change les n° puis « Maj SHAP local seul », sans relancer le reste) ---"
+            )
+            for nom_modele in _etat_shap.get("models") or []:
+                pack = _etat_shap["pack"].get(nom_modele)
+                pipeline = _etat_shap["pipelines"].get(nom_modele)
+                for idx in fiches_shap:
+                    print(f"\n{nom_modele} — fiche {idx}")
+                    try:
+                        tracer_shap_local(
+                            pipeline,
+                            X_eval,
+                            index=idx,
+                            nom_modele=f"{nom_modele} ({label})",
+                            shap_pack=pack,
+                        )
+                    except Exception as exc:
+                        print(f"⚠️ Impossible : {exc}")
+
+    btn_shap_local.on_click(_dessiner_shap_local)
     tab.set_title(0, "1. Probas")
     tab.set_title(1, "2. Importances")
     tab.set_title(2, "3. Beeswarm SHAP")
@@ -1329,31 +1421,28 @@ def interface_etude_modeles_etape():
                 nom_modele=f"{meilleur_modele} ({dataset_label})", scoring='roc_auc'
             )
 
-        # --- Onglet 2 : Beeswarm SHAP ---
-        with tab.children[2]:
+        # --- Onglet 2 : Beeswarm SHAP (global seulement) ---
+        with tab_contents[2]:
             clear_output()
             if mode_donnees == 'cv':
-                print("ℹ️ SHAP n'est pas calculable par pli de CV (chaque pli entraîne un modèle "
-                      "différent). Les graphiques ci-dessous expliquent le modèle final, entraîné "
-                      "sur l'ensemble Train complet, évalué sur ce même Train.")
+                print("ℹ️ SHAP n'est pas calculable par pli de CV. "
+                      "Les graphiques expliquent le modèle final sur le Train.")
             print(f"--- Graphique Beeswarm SHAP (vue globale) [{dataset_label}] ---")
+            _etat_shap["pack"] = {}
             for nom_modele in top_model_names:
-                # SHAP utilise toujours le vrai pipeline entraîné (pas le proxy CV)
-                tracer_beeswarm_shap(current_fitted_pipelines[nom_modele], X_eval, nom_modele=f"{nom_modele} ({dataset_label})")
+                pack = tracer_beeswarm_shap(
+                    current_fitted_pipelines[nom_modele],
+                    X_eval,
+                    nom_modele=f"{nom_modele} ({dataset_label})",
+                )
+                if pack is not None:
+                    _etat_shap["pack"][nom_modele] = pack
+            _etat_shap["X"] = X_eval
+            _etat_shap["models"] = list(top_model_names)
+            _etat_shap["label"] = dataset_label
+            _etat_shap["pipelines"] = current_fitted_pipelines
 
-            print(f"\n--- Graphique SHAP local — observation n°0, chaque modèle du Top N [{dataset_label}] ---")
-            print("Même salarié, un waterfall par modèle.")
-            for nom_modele in top_model_names:
-                print(f"\nCalcul SHAP local : {nom_modele} (observation 0)...")
-                try:
-                    tracer_shap_local(
-                        current_fitted_pipelines[nom_modele],
-                        X_eval,
-                        index=0,
-                        nom_modele=f"{nom_modele} ({dataset_label})",
-                    )
-                except Exception as exc:
-                    print(f"⚠️ SHAP local impossible pour {nom_modele} : {exc}")
+        _dessiner_shap_local()
 
         # --- Onglet 3 : Matrices de confusion ---
         with tab.children[3]:
@@ -1417,7 +1506,10 @@ def interface_etude_modeles_etape():
         widgets.HBox([widgets.HTML("<b>Modèles à inclure manuellement (en plus du Top N) :</b>"),
                       btn_refresh_modeles]),
         zone_selecteur,
-        widgets.HBox([metrique_dropdown, top_n_models_slider, dataset_dropdown]),
+        widgets.HBox([
+            metrique_dropdown, top_n_models_slider, dataset_dropdown,
+            shap_fiches_text, btn_shap_local,
+        ]),
         btn_eval,
         tab
     ])
