@@ -814,48 +814,107 @@ def afficher_grille_true_vs_pred(
 # ----------------------------------------------------------------------
 # 11. Analyse des corrélations (Pearson & Spearman) et Pairplot
 # ----------------------------------------------------------------------
+def _tableau_paires_correlation(corr_pearson, corr_spearman) -> pd.DataFrame:
+    """Une ligne par paire, tri |Pearson| décroissant."""
+    lignes = []
+    colonnes = list(corr_pearson.columns)
+    for i, a in enumerate(colonnes):
+        for b in colonnes[i + 1 :]:
+            r = corr_pearson.loc[a, b] if a in corr_pearson.index and b in corr_pearson.columns else np.nan
+            rho = (
+                corr_spearman.loc[a, b]
+                if corr_spearman is not None and a in corr_spearman.index and b in corr_spearman.columns
+                else np.nan
+            )
+            if pd.isna(r) and pd.isna(rho):
+                continue
+            lignes.append(
+                {
+                    "variable_1": a,
+                    "variable_2": b,
+                    "Pearson_r": float(r) if pd.notna(r) else np.nan,
+                    "Spearman_ρ": float(rho) if pd.notna(rho) else np.nan,
+                    "|Pearson|": abs(float(r)) if pd.notna(r) else np.nan,
+                }
+            )
+    if not lignes:
+        return pd.DataFrame(columns=["variable_1", "variable_2", "Pearson_r", "Spearman_ρ", "|Pearson|"])
+    return (
+        pd.DataFrame(lignes)
+        .sort_values("|Pearson|", ascending=False)
+        .drop(columns=["|Pearson|"])
+        .reset_index(drop=True)
+    )
+
+
 def analyser_correlations_features(X, seuil_pearson=0.85):
-    print("--- 1. Analyse de la corrélation de Pearson (Linéaire) ---")
-    corr_pearson = X.select_dtypes(include=[np.number]).corr(method='pearson')
-    
-    plt.figure(figsize=(10, 8))
-    sns.heatmap(corr_pearson, annot=False, cmap="coolwarm", vmin=-1, vmax=1, linewidths=0.5)
-    plt.title("Matrice de corrélation de Pearson")
-    plt.tight_layout()
+    print("--- 1. Analyse de la corrélation de Pearson (linéaire) ---")
+    X_num = X.select_dtypes(include=[np.number])
+    if X_num.shape[1] < 2:
+        print("Pas assez de colonnes numériques pour une matrice de corrélation.")
+        return None, None
+
+    corr_pearson = X_num.corr(method="pearson")
+    n = corr_pearson.shape[0]
+    cote = max(8, min(16, 0.55 * n + 4))
+    fig, ax = plt.subplots(figsize=(cote, cote * 0.85))
+    sns.heatmap(corr_pearson, annot=n <= 12, fmt=".2f", cmap="coolwarm",
+                vmin=-1, vmax=1, linewidths=0.5, ax=ax, square=True)
+    ax.set_title("Matrice de corrélation de Pearson")
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
+    fig.tight_layout()
     plt.show()
 
-    hautes_corrs = []
-    columns = corr_pearson.columns
-    for i in range(len(columns)):
-        for j in range(i + 1, len(columns)):
-            val = corr_pearson.iloc[i, j]
-            if abs(val) >= seuil_pearson:
-                hautes_corrs.append((columns[i], columns[j], val))
-                
-    if hautes_corrs:
-        print(f"⚠️ Paires avec une corrélation linéaire |r| >= {seuil_pearson} :")
-        for f1, f2, val in hautes_corrs:
-            print(f"   - {f1} <--> {f2} : {val:.3f}")
+    print("\n--- 2. Analyse de la corrélation de Spearman (rangs) ---")
+    corr_spearman = X_num.corr(method="spearman")
+    fig2, ax2 = plt.subplots(figsize=(cote, cote * 0.85))
+    sns.heatmap(corr_spearman, annot=n <= 12, fmt=".2f", cmap="coolwarm",
+                vmin=-1, vmax=1, linewidths=0.5, ax=ax2, square=True)
+    ax2.set_title("Matrice de corrélation de Spearman")
+    plt.setp(ax2.get_xticklabels(), rotation=45, ha="right")
+    fig2.tight_layout()
+    plt.show()
+
+    print("\n--- 3. Paires classées (plus corrélées → moins corrélées) ---")
+    tableau = _tableau_paires_correlation(corr_pearson, corr_spearman)
+    if tableau.empty:
+        print("Aucune paire à classer.")
     else:
-        print(f"Aucune paire ne dépasse le seuil de corrélation linéaire de {seuil_pearson}.")
+        jumelles = tableau[tableau["Pearson_r"].abs() >= seuil_pearson]
+        print(f"{len(tableau)} paires. En tête = le plus lié (jumelles si |r| ≥ {seuil_pearson}).")
+        if jumelles.empty:
+            print(f"Aucune paire au-dessus du seuil |r| ≥ {seuil_pearson}.")
+        else:
+            print(f"⚠️ {len(jumelles)} paire(s) |r| ≥ {seuil_pearson} (à discuter au panneau ON/OFF) :")
+            display(jumelles.round(3))
+        print("\nClassement complet :")
+        display(
+            tableau.style
+            .format({"Pearson_r": "{:.3f}", "Spearman_ρ": "{:.3f}"})
+            .background_gradient(subset=["Pearson_r", "Spearman_ρ"], cmap="RdBu_r", vmin=-1, vmax=1)
+        )
 
-    print("\n--- 2. Analyse de la corrélation de Spearman (Non-linéaire) ---")
-    corr_spearman = X.select_dtypes(include=[np.number]).corr(method='spearman')
-    
-    plt.figure(figsize=(10, 8))
-    sns.heatmap(corr_spearman, annot=False, cmap="coolwarm", vmin=-1, vmax=1, linewidths=0.5)
-    plt.title("Matrice de corrélation de Spearman (Non-linéaire)")
-    plt.tight_layout()
-    plt.show()
-
-    print("\n--- 3. Tracé du Pairplot ---")
-    cols_a_tracer = X.select_dtypes(include=[np.number]).columns
+    print("\n--- 4. Pairplot (graphique entier) ---")
+    cols_a_tracer = list(X_num.columns)
     if len(cols_a_tracer) > 6:
+        print(f"Pairplot limité aux 6 premières colonnes numériques ({len(cols_a_tracer)} au total).")
+        print("Le tableau ci-dessus contient toutes les paires.")
         cols_a_tracer = cols_a_tracer[:6]
-
-    sns.pairplot(X[cols_a_tracer], diag_kind='kde', corner=True)
-    plt.suptitle("Pairplot des features", y=1.02)
-    plt.show()
+    n_vars = len(cols_a_tracer)
+    if n_vars >= 2:
+        hauteur = 2.35
+        grid = sns.pairplot(
+            X_num[cols_a_tracer].dropna(),
+            diag_kind="kde",
+            corner=True,
+            height=hauteur,
+            plot_kws={"s": 18, "alpha": 0.45, "edgecolor": "none"},
+        )
+        cote_fig = max(9.0, hauteur * n_vars + 1.4)
+        grid.fig.set_size_inches(cote_fig, cote_fig)
+        grid.fig.subplots_adjust(left=0.10, right=0.98, bottom=0.10, top=0.93, wspace=0.12, hspace=0.12)
+        grid.fig.suptitle("Pairplot des features numériques", y=0.99, fontsize=13)
+        plt.show()
 
     return corr_pearson, corr_spearman
 
