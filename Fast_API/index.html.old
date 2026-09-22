@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Testeur de Modèle — Prédiction RH</title>
+    <style>
+        body { font-family: Arial, sans-serif; background-color: #f4f7f6; margin: 0; padding: 20px; }
+        .container { max-width: 900px; margin: auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
+        h1 { color: #2c3e50; text-align: center; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; font-weight: bold; margin-bottom: 5px; color: #34495e; font-size: 14px; }
+        input, select { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 15px; }
+        button { background-color: #3498db; color: white; padding: 12px 20px; border: none; border-radius: 4px; cursor: pointer; width: 100%; font-size: 16px; margin-top: 20px; }
+        button:hover { background-color: #2980b9; }
+        #resultat { margin-top: 25px; padding: 20px; background-color: #e8f8f5; border-left: 5px solid #2ecc71; border-radius: 4px; display: none; }
+        .config-section { background: #ecf0f1; padding: 15px; border-radius: 4px; margin-bottom: 20px; display: flex; flex-direction: column; gap: 15px; }
+        .config-row { display: flex; gap: 20px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>Interface de Prédiction</h1>
+    
+    <!-- SECTION CONFIGURATION + IDENTITÉ -->
+    <div class="config-section">
+        <div class="config-row">
+            <div style="flex: 1;">
+                <label for="input-prenom">Prénom :</label>
+                <input type="text" id="input-prenom" value="John">
+            </div>
+            <div style="flex: 1;">
+                <label for="input-nom">Nom :</label>
+                <input type="text" id="input-nom" value="Doe">
+            </div>
+        </div>
+        <div class="config-row">
+            <div style="flex: 1;">
+                <label for="select-modele">Modèle à utiliser :</label>
+                <select id="select-modele">
+                    <option value="top1">LogisticRegression</option>
+                   
+                </select>
+            </div>
+            <div style="flex: 1;">
+                <label for="input-seuil">Seuil de décision :</label>
+                <input type="number" id="input-seuil" value="0.5" step="0.05" min="0" max="1">
+            </div>
+        </div>
+    </div>
+
+    <form id="prediction-form">
+        <div class="grid" id="fields-container">
+            <!-- Champs dynamiques -->
+        </div>
+        <button type="submit">Envoyer au modèle</button>
+    </form>
+
+    <div id="resultat">
+        <h3>Résultat de la prédiction :</h3>
+        <p id="resultat-texte"></p>
+        
+        <hr style="margin: 15px 0; border: 0; border-top: 1px solid #a3e4d7;">
+        <button type="button" id="btn-sauvegarder" style="background-color: #27ae60; margin-top: 5px; width: auto; padding: 10px 20px;">
+            💾 Enregistrer cette prédiction en base de données
+        </button>
+        <span id="msg-sauvegarde" style="display: inline-block; margin-left: 15px; font-weight: bold;"></span>
+    </div>
+</div>
+
+<script>
+    const optionsCategoriques = {
+        "genre": ["M", "F"],
+        "statut_marital": ["Célibataire", "Divorcé(e)", "Marié(e)"],
+        "departement": ["Commercial", "Consulting", "Ressources Humaines"],
+        "poste": ["Assistant de Direction", "Cadre Commercial", "Consultant", "Directeur Technique", "Manager", "Représentant Commercial", "Ressources Humaines", "Senior Manager", "Tech Lead"],
+        "domaine_etude": ["Autre", "Entrepreunariat", "Infra & Cloud", "Marketing", "Ressources Humaines", "Transformation Digitale"],
+        "frequence_deplacement": ["Aucun", "Frequent", "Occasionnel"],
+        "heure_supplementaires": ["Non", "Oui"]
+    };
+
+    const valeursParDefaut = {
+        "age": 36,
+        "revenu_mensuel": 4919,
+        "nombre_experiences_precedentes": 2,
+        "annee_experience_totale": 10,
+        "annees_dans_l_entreprise": 5,
+        "annees_dans_le_poste_actuel": 3,
+        "nombre_participation_pee": 1,
+        "nb_formations_suivies": 3,
+        "distance_domicile_travail": 7,
+        "niveau_education": 3,
+        "annees_depuis_la_derniere_promotion": 1,
+        "annes_sous_responsable_actuel": 3,
+        "satisfaction_employee_environnement": 3,
+        "note_evaluation_precedente": 0.8,
+        "niveau_hierarchique_poste": 2,
+        "satisfaction_employee_nature_travail": 3,
+        "satisfaction_employee_equipe": 3,
+        "satisfaction_employee_equilibre_pro_perso": 3,
+        "augentation_salaire_precedente": 15,
+        "satisfaction_globale": 3,
+        "satisfaction_min": 2,
+        "montant_augmentation_precedente": 632,
+        "ratio_anciennete_carriere": 0.8,
+        "inertie_poste": 0.667,
+        "stagnation_promotion": 0.167,
+        "revenu_par_annee_experience": 549.22,
+        "revenu_par_niveau": 2856.48,
+        "delta_performance": 0,
+        "hs_et_salaire_bas": 0,
+        "jeune_faible_anciennete": 0,
+        "trajet_long": 0,
+        "job_hopper": 0,
+        
+    };
+
+    let colonnesActuelles = [];
+    let dernierePredictionData = null;
+
+    async function chargerColonnes() {
+        const modele = document.getElementById("select-modele").value;
+        try {
+            const response = await fetch(`/colonnes?modele=${modele}`);
+            const data = await response.json();
+            colonnesActuelles = data.colonnes;
+            
+            const container = document.getElementById("fields-container");
+            container.innerHTML = "";
+
+            colonnesActuelles.forEach(col => {
+                const div = document.createElement("div");
+                div.className = "form-group";
+
+                const label = document.createElement("label");
+                label.innerText = col;
+                label.htmlFor = col;
+                div.appendChild(label);
+
+                if (optionsCategoriques[col]) {
+                    const select = document.createElement("select");
+                    select.id = col;
+                    select.name = col;
+                    optionsCategoriques[col].forEach(opt => {
+                        const option = document.createElement("option");
+                        option.value = opt;
+                        option.innerText = opt;
+                        select.appendChild(option);
+                    });
+                    div.appendChild(select);
+                } else {
+                    const input = document.createElement("input");
+                    input.id = col;
+                    input.name = col;
+                    input.type = "number";
+                    input.step = "any";
+                    input.value = valeursParDefaut[col] !== undefined ? valeursParDefaut[col] : 0;
+                    div.appendChild(input);
+                }
+                container.appendChild(div);
+            });
+        } catch (e) {
+            console.error("Erreur lors du chargement des colonnes", e);
+        }
+    }
+
+    document.getElementById("select-modele").addEventListener("change", chargerColonnes);
+    window.addEventListener("DOMContentLoaded", chargerColonnes);
+
+    document.getElementById("prediction-form").addEventListener("submit", async function(e) {
+        e.preventDefault();
+        
+        const modeleChoisi = document.getElementById("select-modele").value;
+        const seuilSaisi = parseFloat(document.getElementById("input-seuil").value);
+        
+        const features = {};
+        colonnesActuelles.forEach(col => {
+            const element = document.getElementById(col);
+            let val = element.value;
+            if (!optionsCategoriques[col]) {
+                val = val.includes('.') ? parseFloat(val) : parseInt(val, 10);
+            }
+            features[col] = val;
+        });
+
+        const payload = {
+            modele: modeleChoisi,
+            features: features,
+            seuil: seuilSaisi
+        };
+
+        try {
+            const response = await fetch("/predict", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload)
+            });
+
+            const data = await response.json();
+            const resultatDiv = document.getElementById("resultat");
+            const resultatTexte = document.getElementById("resultat-texte");
+
+            if (response.ok) {
+                resultatDiv.style.display = "block";
+                
+                const probaDepart = data.probabilite * 100;
+                const probaRester = 100 - probaDepart;
+
+                const libellePrediction = data.prediction === 1 
+                    ? "⚠️ Quitte (1)" 
+                    : "✅ Reste (0)";
+
+                const libelleTexteBrut = data.prediction === 1 ? "Quitte" : "Reste";
+
+                resultatTexte.innerHTML = `
+                    <strong>Modèle utilisé :</strong> ${data.modele_utilise} <br>
+                    <strong>Prédiction finale :</strong> ${libellePrediction} <br>
+                    <hr style="margin: 8px 0; border: 0; border-top: 1px solid #d1f2eb;">
+                    <strong>Risque de départ :</strong> ${probaDepart.toFixed(2)}% <br>
+                    <strong>Probabilité de rester :</strong> ${probaRester.toFixed(2)}% <br>
+                    <strong>Seuil de décision :</strong> ${data.seuil_utilise * 100}%
+                `;
+
+                const prenomSaisi = document.getElementById("input-prenom").value.trim() || "John";
+                const nomSaisi = document.getElementById("input-nom").value.trim() || "Doe";
+
+                // CORRECTION ICI : utilisation correcte de "probabilite_de_quitter"
+                dernierePredictionData = {
+                    prenom: prenomSaisi,
+                    nom: nomSaisi,
+                    modele_utilise: data.modele_utilise,
+                    probabilite_de_quitter: data.probabilite,
+                    prediction: data.prediction,
+                    libelle_prediction: libelleTexteBrut,
+                    seuil_applique: data.seuil_utilise,
+                    features: features
+                };
+
+                document.getElementById("msg-sauvegarde").innerText = "";
+
+            } else {
+                alert("Erreur de l'API : " + JSON.stringify(data.detail));
+            }
+        } catch (error) {
+            alert("Impossible de joindre l'API.");
+            console.error(error);
+        }
+    });
+
+    document.getElementById("btn-sauvegarder").addEventListener("click", async () => {
+        if (!dernierePredictionData) return;
+
+        const msgSpan = document.getElementById("msg-sauvegarde");
+        try {
+            const response = await fetch("/sauvegarder", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(dernierePredictionData)
+            });
+
+            const result = await response.json();
+            if (response.ok) {
+                msgSpan.style.color = "#27ae60";
+                msgSpan.innerText = "✔ Enregistré (" + dernierePredictionData.libelle_prediction + ") pour " + dernierePredictionData.prenom + " " + dernierePredictionData.nom + " !";
+            } else {
+                let erreurMsg = "Erreur serveur";
+                if (result.detail) {
+                    if (typeof result.detail === 'string') {
+                        erreurMsg = result.detail;
+                    } else if (Array.isArray(result.detail)) {
+                        erreurMsg = result.detail.map(err => `${err.loc.join('.')} : ${err.msg}`).join(' | ');
+                    } else {
+                        erreurMsg = JSON.stringify(result.detail);
+                    }
+                }
+                throw new Error(erreurMsg);
+            }
+        } catch (error) {
+            msgSpan.style.color = "#c0392b";
+            msgSpan.innerText = "✖ Erreur : " + error.message;
+            console.error("Détail de l'erreur :", error);
+        }
+    });
+</script>
+
+</body>
+</html>
