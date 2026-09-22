@@ -1,0 +1,10 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+joblib==1.5.3
+pandas>=2.0
+numpy>=1.26
+
+# IMPORTANT : doit correspondre EXACTEMENT à la version scikit-learn
+# utilisée pour entraîner/sauvegarder le modèle (.pkl), sinon vous
+# aurez des InconsistentVersionWarning voire des erreurs de chargement.
+scikit-learn==1.9.0
