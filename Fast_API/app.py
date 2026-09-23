@@ -420,10 +420,11 @@ def appeler_modele(model, df_num: pd.DataFrame, df_mixte: pd.DataFrame, df_align
 
 
 # --- CHARGEMENT DES MODÈLES MACHINE LEARNING ---
-MODELS = {
-    "top1": "modeles/LogisticRegression.pkl",
-}
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+MODELS = {
+    "top1": os.path.join(BASE_DIR, "modeles", "LogisticRegression.pkl"),
+}
 loaded_models = {}
 
 for nom_modele, chemin in MODELS.items():
