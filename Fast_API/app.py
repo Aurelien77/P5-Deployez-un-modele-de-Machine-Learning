@@ -419,9 +419,9 @@ def appeler_modele(model, df_num: pd.DataFrame, df_mixte: pd.DataFrame, df_align
     raise RuntimeError("Aucun format d'entrée n'a fonctionné. Détails : " + " | ".join(erreurs))
 
 
-# --- CHARGEMENT DES MODÈLES MACHINE LEARNING (Dossier 'modeles/') ---
+# --- CHARGEMENT DES MODÈLES MACHINE LEARNING ---
 MODELS = {
-    "top1": "Modeles/LogisticRegression.pkl",
+    "top1": "modeles/LogisticRegression.pkl",
 }
 
 loaded_models = {}

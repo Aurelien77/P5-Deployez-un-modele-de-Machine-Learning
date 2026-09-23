@@ -5,7 +5,6 @@ from sqlalchemy import create_engine, inspect, MetaData, Table, Column, Integer,
 from sqlalchemy.exc import OperationalError
 
 # --- CONFIGURATION DE LA BASE DE DONNÉES POSTGRESQL ---
-# (mêmes variables d'environnement que dans app.py, pour rester cohérent)
 DB_USER = os.getenv("DB_USER", "postgres")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "mysecretpassword")
 DB_HOST = os.getenv("DB_HOST", "localhost")
@@ -72,7 +71,7 @@ def creer_table_si_absente(engine, metadata: MetaData, nom_table: str, chemin_cs
     return True
 
 
-def charger_donnees_si_vide(engine, nom_table: str, chemin_csv: str):
+def charger_donnees_si_vide(engine, metadata: MetaData, nom_table: str, chemin_csv: str):
     """Charge le CSV dans la table uniquement si celle-ci est vide (évite les doublons au redémarrage)."""
     with engine.connect() as conn:
         nb_lignes = conn.execute(text(f'SELECT COUNT(*) FROM "{nom_table}"')).scalar()
@@ -83,8 +82,17 @@ def charger_donnees_si_vide(engine, nom_table: str, chemin_csv: str):
 
     print(f"Chargement des données de {chemin_csv} dans '{nom_table}'...")
     df = pd.read_csv(chemin_csv)
+    
+    # On récupère la structure de la table existante
+    table = Table(nom_table, metadata, autoload_with=engine)
+    
+    # Conversion du DataFrame en liste de dictionnaires
+    data_dicts = df.to_dict(orient="records")
+
+    # Insertion par lots robuste via SQLAlchemy
     with engine.begin() as connexion:
-        df.to_sql(nom_table, connexion, if_exists="append", index=False)
+        connexion.execute(table.insert(), data_dicts)
+        
     print(f"{len(df)} lignes insérées dans '{nom_table}'.")
 
 
@@ -97,8 +105,8 @@ def main():
     creer_table_si_absente(engine, metadata, TABLE_X, X_CSV)
     creer_table_si_absente(engine, metadata, TABLE_Y, Y_CSV)
 
-    charger_donnees_si_vide(engine, TABLE_X, X_CSV)
-    charger_donnees_si_vide(engine, TABLE_Y, Y_CSV)
+    charger_donnees_si_vide(engine, metadata, TABLE_X, X_CSV)
+    charger_donnees_si_vide(engine, metadata, TABLE_Y, Y_CSV)
 
     print("Initialisation des tables 'employes_features' et 'employes_cible' terminée.")
 
