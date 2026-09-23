@@ -80,6 +80,8 @@ jobs:
       # 5. Vérification de Fast_API et des imports
       # ----------------------------------------------------------
       - name: Check Python imports
+        env:
+          PYTHONPATH: .
         run: |
           echo "=== Version Python ==="
           python --version
@@ -116,6 +118,7 @@ jobs:
           DB_USER: postgres
           DB_PASSWORD: mysecretpassword
           DB_NAME: rh_predictions_db
+          PYTHONPATH: .
         run: |
           pytest tests/test_api.py \
             --cov=Fast_API \
@@ -147,6 +150,7 @@ jobs:
           DB_USER: postgres
           DB_PASSWORD: mysecretpassword
           DB_NAME: rh_predictions_db
+          PYTHONPATH: .
         run: |
           echo "## 📊 Rapport de couverture" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
