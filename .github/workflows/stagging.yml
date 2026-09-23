@@ -1,0 +1,16 @@
+name: Stagging Pipeline
+
+on:
+  push:
+    branches:
+      - Stagging
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Display message
+        run: echo "OK stagging is up"
