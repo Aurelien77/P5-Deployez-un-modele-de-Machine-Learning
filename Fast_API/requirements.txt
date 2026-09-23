@@ -12,3 +12,4 @@ scikit-learn==1.9.0
 # --- Base de données PostgreSQL ---
 sqlalchemy==2.0.35
 psycopg[binary]==3.2.3
+httpx
