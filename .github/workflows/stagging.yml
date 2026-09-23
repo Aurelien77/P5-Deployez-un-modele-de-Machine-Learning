@@ -1,3 +1,4 @@
+
 name: CI/CD Pipeline
 
 on:
@@ -7,22 +8,124 @@ on:
       - Main
 
 jobs:
+
+  # ============================================================
+  # TESTS SUR STAGGING
+  # ============================================================
   test:
     if: github.ref == 'refs/heads/Stagging'
     runs-on: ubuntu-latest
+
     steps:
+
+      # ----------------------------------------------------------
+      # Récupération du code
+      # ----------------------------------------------------------
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Display message
-        run: echo "OK stagging is up"
+      # ----------------------------------------------------------
+      # Installation de Python
+      # ----------------------------------------------------------
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
 
+      # ----------------------------------------------------------
+      # Installation des dépendances
+      # ----------------------------------------------------------
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r Fast_API/requirements.txt
+          pip install pytest pytest-cov
+
+      # ----------------------------------------------------------
+      # Lancement des tests + couverture
+      # ----------------------------------------------------------
+      - name: Run tests and coverage
+        run: |
+          pytest tests/test_api.py \
+            --cov=Fast_API \
+            --cov-report=term-missing \
+            --cov-report=html:htmlcov \
+            --cov-report=xml:coverage.xml \
+            --junitxml=test-results.xml
+
+      # ----------------------------------------------------------
+      # Résumé des tests dans GitHub
+      # ----------------------------------------------------------
+      - name: Publish test results
+        if: always()
+        uses: dorny/test-reporter@v2
+        with:
+          name: Pytest Results
+          path: test-results.xml
+          reporter: java-junit
+          fail-on-error: false
+
+      # ----------------------------------------------------------
+      # Ajouter la couverture dans le résumé GitHub
+      # ----------------------------------------------------------
+      - name: Coverage summary
+        if: always()
+        run: |
+          echo "## 📊 Rapport de couverture" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          python -m pytest tests/test_api.py \
+            --cov=Fast_API \
+            --cov-report=term-missing \
+            --no-cov-on-fail 2>&1 | tail -n 30 >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      # ----------------------------------------------------------
+      # Artefact : rapport HTML de couverture
+      # ----------------------------------------------------------
+      - name: Upload coverage HTML report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html
+          path: htmlcov/
+          retention-days: 30
+
+      # ----------------------------------------------------------
+      # Artefact : rapport XML de couverture
+      # ----------------------------------------------------------
+      - name: Upload coverage XML
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          retention-days: 30
+
+      # ----------------------------------------------------------
+      # Artefact : résultats des tests
+      # ----------------------------------------------------------
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: test-results.xml
+          retention-days: 30
+
+
+  # ============================================================
+  # DEPLOIEMENT SUR MAIN
+  # ============================================================
   deploy:
     if: github.ref == 'refs/heads/Main'
     runs-on: ubuntu-latest
+
     steps:
+
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Display message
         run: echo "Déploiement OK Ready to next"
+
