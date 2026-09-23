@@ -1,0 +1,28 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - Stagging
+      - Main
+
+jobs:
+  test:
+    if: github.ref == 'refs/heads/Stagging'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Display message
+        run: echo "OK stagging is up"
+
+  deploy:
+    if: github.ref == 'refs/heads/Main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Display message
+        run: echo "Déploiement OK Ready to next"
