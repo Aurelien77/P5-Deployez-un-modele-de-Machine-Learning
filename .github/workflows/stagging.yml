@@ -52,7 +52,16 @@ jobs:
           ls -la tests
 
       # ----------------------------------------------------------
-      # 4. Vérification de Fast_API
+      # 4. Installation des dépendances (AVANT les tests d'import)
+      # ----------------------------------------------------------
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r Fast_API/requirements.txt
+          pip install pytest pytest-cov httpx
+
+      # ----------------------------------------------------------
+      # 5. Vérification de Fast_API et des imports (Déplacé ici)
       # ----------------------------------------------------------
       - name: Check Python imports
         run: |
@@ -70,15 +79,6 @@ jobs:
           echo ""
           echo "=== Import Fast_API.app ==="
           python -c "from Fast_API.app import app; print('Import Fast_API.app OK')"
-
-      # ----------------------------------------------------------
-      # 5. Installation des dépendances
-      # ----------------------------------------------------------
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r Fast_API/requirements.txt
-          pip install pytest pytest-cov httpx
 
       # ----------------------------------------------------------
       # 6. Vérification des dépendances
