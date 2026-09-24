@@ -8,22 +8,19 @@
 
   vars:
     app_dir: /app/P5_predictions
-    ci_registry_image: ghcr.io/aurelien77/p5_predictions
+    ci_registry_image: ghcr.io/aurelien77/p5-deployez-un-modele-de-machine-learning
     edge_network_name: edge-network
 
   tasks:
-
-    - name: Vérifier que les secrets du vault sont bien définis
+    - name: Vérifier que les secrets du vault sont définis
       ansible.builtin.assert:
         that:
           - vault_db_password is defined and vault_db_password | length > 0
           - registry_user is defined and registry_user | length > 0
           - registry_token is defined and registry_token | length > 0
         fail_msg: >-
-          Variables manquantes dans vault.yml.
-          Il faut vault_db_password, registry_user (compte GitHub)
-          et registry_token (PAT GitHub avec scope read:packages).
-          gitlab_token / glpat-* ne fonctionnent pas avec ghcr.io.
+          vault.yml doit contenir vault_db_password, registry_user
+          et registry_token (PAT GitHub read:packages, pas un glpat).
 
     - name: Installer les paquets requis
       ansible.builtin.apt:
@@ -43,19 +40,19 @@
         - "{{ app_dir }}"
         - "{{ app_dir }}/devops"
 
-    - name: Copier docker-compose.prod.yml sur le serveur
+    - name: Copier docker-compose.prod.yml
       ansible.builtin.copy:
         src: "{{ playbook_dir }}/../docker-compose.prod.yml"
         dest: "{{ app_dir }}/devops/docker-compose.prod.yml"
         mode: "0644"
 
-    - name: Générer .env.prod depuis le template
+    - name: Générer .env.prod
       ansible.builtin.template:
         src: templates/env.prod.j2
         dest: "{{ app_dir }}/devops/.env.prod"
         mode: "0600"
 
-    - name: S'assurer que le réseau edge-network existe
+    - name: S'assurer que edge-network existe
       ansible.builtin.shell: |
         docker network inspect {{ edge_network_name }} >/dev/null 2>&1 || \
         docker network create {{ edge_network_name }}
@@ -67,7 +64,7 @@
         echo "{{ registry_token }}" | docker login ghcr.io -u "{{ registry_user }}" --password-stdin
       no_log: true
 
-    - name: Démarrer la stack Docker Compose (pull + up)
+    - name: Démarrer la stack (pull + up)
       ansible.builtin.shell: |
         docker compose \
           --env-file devops/.env.prod \
@@ -78,10 +75,9 @@
       environment:
         CI_REGISTRY_IMAGE: "{{ ci_registry_image }}"
 
-    - name: Rappel — vhost nginx predictions.1dream.art
+    - name: Rappel nginx predictions.1dream.art
       ansible.builtin.debug:
         msg: >
-          Vérifie que le bloc server{} pour predictions.1dream.art
-          est présent dans /app/1reve/devops/nginx/nginx.conf
-          (géré par le repo 1reve), puis :
+          Vérifie le server{} predictions.1dream.art dans
+          /app/1reve/devops/nginx/nginx.conf puis :
           docker exec nginx nginx -t && docker exec nginx nginx -s reload

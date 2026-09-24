@@ -8,7 +8,6 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}/api   # -> ghcr.io/<owner>/<repo>/api
 
 jobs:
 
@@ -166,10 +165,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write   # nécessaire pour pousser sur ghcr.io
+      packages: write
 
     outputs:
       image_tag: ${{ steps.meta.outputs.image_tag }}
+      image_repo: ${{ steps.meta.outputs.image_repo }}
 
     steps:
       - name: Checkout code
@@ -180,11 +180,16 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}   # fourni automatiquement, pas de secret à créer
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set image tag
+      - name: Set lowercase image name and tag
         id: meta
-        run: echo "image_tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+        run: |
+          # GHCR impose un nom d'image 100% minuscule
+          IMAGE_REPO="$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
+          echo "image_repo=${IMAGE_REPO}" >> "$GITHUB_OUTPUT"
+          echo "image_tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "Image : ${{ env.REGISTRY }}/${IMAGE_REPO}/api"
 
       - name: Build and push
         uses: docker/build-push-action@v6
@@ -192,15 +197,12 @@ jobs:
           context: .
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.image_tag }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            ${{ env.REGISTRY }}/${{ steps.meta.outputs.image_repo }}/api:${{ steps.meta.outputs.image_tag }}
+            ${{ env.REGISTRY }}/${{ steps.meta.outputs.image_repo }}/api:latest
 
 
   # ============================================================
   # DEPLOY - MAIN (validation manuelle obligatoire)
-  # Le job se met en PAUSE ici et affiche un bouton "Review deployments"
-  # tant que l'environment "production" n'est pas approuvé.
-  # Cf. Settings > Environments > production > Required reviewers
   # ============================================================
   deploy:
     if: github.ref == 'refs/heads/Main'
@@ -211,7 +213,7 @@ jobs:
       url: https://predictions.1dream.art
     permissions:
       contents: read
-      packages: read   # le GITHUB_TOKEN doit pouvoir lire le package pour le pull côté serveur
+      packages: read
 
     steps:
       - name: Checkout code
@@ -238,6 +240,7 @@ jobs:
           ansible-playbook -i inventory/hosts.yml playbook_update.yml \
             --vault-password-file /tmp/vault_pass.txt \
             -e "ci_commit_sha=${{ needs.build-and-push.outputs.image_tag }}" \
+            -e "ci_registry_image=ghcr.io/${{ needs.build-and-push.outputs.image_repo }}" \
             -e "registry_token=${{ secrets.GITHUB_TOKEN }}" \
             -e "registry_user=${{ github.actor }}"
 
