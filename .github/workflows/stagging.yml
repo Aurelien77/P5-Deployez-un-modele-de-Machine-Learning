@@ -6,6 +6,10 @@ on:
       - Stagging
       - Main
 
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/api   # -> ghcr.io/<owner>/<repo>/api
+
 jobs:
 
   # ============================================================
@@ -15,7 +19,6 @@ jobs:
     if: github.ref == 'refs/heads/Stagging'
     runs-on: ubuntu-latest
 
-    # Démarrage d'un service PostgreSQL pour les tests dans la CI
     services:
       postgres:
         image: postgres:15-alpine
@@ -32,75 +35,50 @@ jobs:
           --health-retries 5
 
     steps:
-
-      # ----------------------------------------------------------
-      # 1. Récupération du projet
-      # ----------------------------------------------------------
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # ----------------------------------------------------------
-      # 2. Installation de Python
-      # ----------------------------------------------------------
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.13'
 
-      # ----------------------------------------------------------
-      # 3. Vérification de la structure du projet
-      # ----------------------------------------------------------
       - name: Check project structure
         run: |
           echo "=== Répertoire courant ==="
           pwd
-
           echo ""
           echo "=== Racine du projet ==="
           ls -la
-
           echo ""
           echo "=== Fast_API ==="
           ls -la Fast_API
-
           echo ""
           echo "=== Tests ==="
           ls -la tests
 
-      # ----------------------------------------------------------
-      # 4. Installation des dépendances
-      # ----------------------------------------------------------
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r Fast_API/requirements.txt
           pip install pytest pytest-cov httpx
 
-      # ----------------------------------------------------------
-      # 5. Vérification de Fast_API et des imports
-      # ----------------------------------------------------------
       - name: Check Python imports
         env:
           PYTHONPATH: .
         run: |
           echo "=== Version Python ==="
           python --version
-
           echo ""
           echo "=== Python path ==="
           python -c "import sys; print('\n'.join(sys.path))"
-
           echo ""
           echo "=== Import Fast_API ==="
           python -c "import Fast_API; print(Fast_API.__file__)"
-
           echo ""
           echo "=== Import Fast_API.app ==="
           python -c "from Fast_API.app import app; print('Import Fast_API.app OK')"
 
-      # ----------------------------------------------------------
-      # 6. Vérification des dépendances
-      # ----------------------------------------------------------
       - name: Check installed packages
         run: |
           python -m pip list
@@ -108,9 +86,6 @@ jobs:
           python -c "import fastapi; print('FastAPI OK')"
           python -c "import sqlalchemy; print('SQLAlchemy OK')"
 
-      # ----------------------------------------------------------
-      # 7. Tests + couverture
-      # ----------------------------------------------------------
       - name: Run tests and coverage
         env:
           DB_HOST: localhost
@@ -127,9 +102,6 @@ jobs:
             --cov-report=xml:coverage.xml \
             --junitxml=test-results.xml
 
-      # ----------------------------------------------------------
-      # 8. Résultats des tests dans GitHub Actions
-      # ----------------------------------------------------------
       - name: Publish test results
         if: always()
         uses: dorny/test-reporter@v2
@@ -139,9 +111,6 @@ jobs:
           reporter: java-junit
           fail-on-error: false
 
-      # ----------------------------------------------------------
-      # 9. Résumé de la couverture
-      # ----------------------------------------------------------
       - name: Coverage summary
         if: always()
         env:
@@ -155,17 +124,12 @@ jobs:
           echo "## 📊 Rapport de couverture" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo '```text' >> $GITHUB_STEP_SUMMARY
-
           python -m pytest tests/test_api.py \
             --cov=Fast_API \
             --cov-report=term-missing \
             --no-cov-on-fail 2>&1 | tail -n 30 >> $GITHUB_STEP_SUMMARY
-
           echo '```' >> $GITHUB_STEP_SUMMARY
 
-      # ----------------------------------------------------------
-      # 10. Sauvegarde du rapport HTML
-      # ----------------------------------------------------------
       - name: Upload coverage HTML report
         if: always()
         uses: actions/upload-artifact@v4
@@ -174,9 +138,6 @@ jobs:
           path: htmlcov/
           retention-days: 30
 
-      # ----------------------------------------------------------
-      # 11. Sauvegarde du rapport XML
-      # ----------------------------------------------------------
       - name: Upload coverage XML
         if: always()
         uses: actions/upload-artifact@v4
@@ -185,9 +146,6 @@ jobs:
           path: coverage.xml
           retention-days: 30
 
-      # ----------------------------------------------------------
-      # 12. Sauvegarde des résultats pytest
-      # ----------------------------------------------------------
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
@@ -198,16 +156,91 @@ jobs:
 
 
   # ============================================================
-  # DEPLOY - MAIN
+  # BUILD & PUSH - MAIN
+  # Construit et pousse l'image à chaque push sur Main.
+  # Ne déploie PAS encore : c'est le job "deploy" qui s'en charge,
+  # et lui seul attend une validation manuelle.
   # ============================================================
-  deploy:
+  build-and-push:
     if: github.ref == 'refs/heads/Main'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write   # nécessaire pour pousser sur ghcr.io
+
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
 
     steps:
-
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Display message
-        run: echo "Déploiement OK Ready to next"
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}   # fourni automatiquement, pas de secret à créer
+
+      - name: Set image tag
+        id: meta
+        run: echo "image_tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.image_tag }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+
+
+  # ============================================================
+  # DEPLOY - MAIN (validation manuelle obligatoire)
+  # Le job se met en PAUSE ici et affiche un bouton "Review deployments"
+  # tant que l'environment "production" n'est pas approuvé.
+  # Cf. Settings > Environments > production > Required reviewers
+  # ============================================================
+  deploy:
+    if: github.ref == 'refs/heads/Main'
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://predictions.1dream.art
+    permissions:
+      contents: read
+      packages: read   # le GITHUB_TOKEN doit pouvoir lire le package pour le pull côté serveur
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python & Ansible
+        run: |
+          python -m pip install --upgrade pip
+          pip install ansible
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "${{ secrets.PROD_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Write vault password file
+        run: echo "${{ secrets.ANSIBLE_VAULT_PASSWORD }}" > /tmp/vault_pass.txt
+
+      - name: Run Ansible deploy
+        working-directory: devops/ansible
+        run: |
+          ansible-playbook -i inventory/hosts.yml playbook_update.yml \
+            --vault-password-file /tmp/vault_pass.txt \
+            -e "ci_commit_sha=${{ needs.build-and-push.outputs.image_tag }}" \
+            -e "registry_token=${{ secrets.GITHUB_TOKEN }}" \
+            -e "registry_user=${{ github.actor }}"
+
+      - name: Cleanup secrets
+        if: always()
+        run: rm -f /tmp/vault_pass.txt ~/.ssh/id_rsa
