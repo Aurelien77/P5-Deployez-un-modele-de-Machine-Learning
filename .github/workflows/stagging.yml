@@ -198,7 +198,7 @@ jobs:
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
-          context: .
+          context: Fast_API
           file: Fast_API/Dockerfile
           push: true
           tags: |
