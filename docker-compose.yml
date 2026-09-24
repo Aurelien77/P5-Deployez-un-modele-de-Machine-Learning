@@ -1,0 +1,60 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres_rh_db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: mysecretpassword
+      POSTGRES_DB: rh_predictions_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d rh_predictions_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  db-init-csv:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: db_init_csv
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: mysecretpassword
+      DB_NAME: rh_predictions_db
+      DATA_DIR: /app/Data
+    volumes:
+      - ../Data:/app/Data:ro
+    command: ["python", "script/init_db_from_csv.py"]
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fastapi_app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      db-init-csv:
+        condition: service_completed_successfully
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: mysecretpassword
+      DB_NAME: rh_predictions_db
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./modeles:/app/modeles
+
+volumes:
+  pgdata:

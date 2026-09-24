@@ -1,0 +1,87 @@
+---
+- name: Setup P5_predictions production server (premier déploiement)
+  hosts: production
+  become: true
+
+  vars_files:
+    - vault.yml
+
+  vars:
+    app_dir: /app/P5_predictions
+    ci_registry_image: ghcr.io/aurelien77/p5_predictions
+    edge_network_name: edge-network
+
+  tasks:
+
+    - name: Vérifier que les secrets du vault sont bien définis
+      ansible.builtin.assert:
+        that:
+          - vault_db_password is defined and vault_db_password | length > 0
+          - registry_user is defined and registry_user | length > 0
+          - registry_token is defined and registry_token | length > 0
+        fail_msg: >-
+          Variables manquantes dans vault.yml.
+          Il faut vault_db_password, registry_user (compte GitHub)
+          et registry_token (PAT GitHub avec scope read:packages).
+          gitlab_token / glpat-* ne fonctionnent pas avec ghcr.io.
+
+    - name: Installer les paquets requis
+      ansible.builtin.apt:
+        name:
+          - git
+          - curl
+          - docker-compose-plugin
+        state: present
+        update_cache: true
+
+    - name: Créer les répertoires applicatifs
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - "{{ app_dir }}"
+        - "{{ app_dir }}/devops"
+
+    - name: Copier docker-compose.prod.yml sur le serveur
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../docker-compose.prod.yml"
+        dest: "{{ app_dir }}/devops/docker-compose.prod.yml"
+        mode: "0644"
+
+    - name: Générer .env.prod depuis le template
+      ansible.builtin.template:
+        src: templates/env.prod.j2
+        dest: "{{ app_dir }}/devops/.env.prod"
+        mode: "0600"
+
+    - name: S'assurer que le réseau edge-network existe
+      ansible.builtin.shell: |
+        docker network inspect {{ edge_network_name }} >/dev/null 2>&1 || \
+        docker network create {{ edge_network_name }}
+      register: edge_network
+      changed_when: "'Created network' in (edge_network.stdout | default(''))"
+
+    - name: Login GitHub Container Registry
+      ansible.builtin.shell: |
+        echo "{{ registry_token }}" | docker login ghcr.io -u "{{ registry_user }}" --password-stdin
+      no_log: true
+
+    - name: Démarrer la stack Docker Compose (pull + up)
+      ansible.builtin.shell: |
+        docker compose \
+          --env-file devops/.env.prod \
+          -f devops/docker-compose.prod.yml \
+          up -d --pull always
+      args:
+        chdir: "{{ app_dir }}"
+      environment:
+        CI_REGISTRY_IMAGE: "{{ ci_registry_image }}"
+
+    - name: Rappel — vhost nginx predictions.1dream.art
+      ansible.builtin.debug:
+        msg: >
+          Vérifie que le bloc server{} pour predictions.1dream.art
+          est présent dans /app/1reve/devops/nginx/nginx.conf
+          (géré par le repo 1reve), puis :
+          docker exec nginx nginx -t && docker exec nginx nginx -s reload

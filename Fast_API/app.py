@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import joblib
 import numpy as np
 import pandas as pd
@@ -10,11 +11,18 @@ from pydantic import BaseModel
 from typing import Dict, Any, Optional, List
 
 from sqlalchemy import create_engine, Column, Integer, String, Float, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
 # --- CONFIGURATION DE LA BASE DE DONNÉES POSTGRESQL ---
-DATABASE_URL = "postgresql+psycopg://postgres:mysecretpassword@localhost:5432/rh_predictions_db"
+DB_USER = os.getenv("DB_USER", "postgres")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "mysecretpassword")
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_PORT = os.getenv("DB_PORT", "5432")
+DB_NAME = os.getenv("DB_NAME", "rh_predictions_db")
+
+DATABASE_URL = f"postgresql+psycopg://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -35,7 +43,20 @@ class ResultatDB(Base):
     details = Column(String)
 
 
-Base.metadata.create_all(bind=engine)
+def _attendre_et_creer_tables(tentatives: int = 10, delai: int = 3):
+    """Attend que Postgres soit prêt, puis vérifie/crée les tables (retry en filet de sécurité)."""
+    for i in range(tentatives):
+        try:
+            Base.metadata.create_all(bind=engine)
+            print("Connexion DB OK, tables vérifiées/créées.")
+            return
+        except OperationalError as e:
+            print(f"DB pas encore prête (essai {i + 1}/{tentatives}) : {e}")
+            time.sleep(delai)
+    raise RuntimeError("Impossible de se connecter à la base après plusieurs tentatives.")
+
+
+_attendre_et_creer_tables()
 
 
 def _assurer_colonne_details():
@@ -398,11 +419,12 @@ def appeler_modele(model, df_num: pd.DataFrame, df_mixte: pd.DataFrame, df_align
     raise RuntimeError("Aucun format d'entrée n'a fonctionné. Détails : " + " | ".join(erreurs))
 
 
-# --- CHARGEMENT DES MODÈLES MACHINE LEARNING (Dossier 'modeles/') ---
-MODELS = {
-    "top1": "modeles/LogisticRegression.pkl",
-}
+# --- CHARGEMENT DES MODÈLES MACHINE LEARNING ---
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+MODELS = {
+    "top1": os.path.join(BASE_DIR, "modeles", "LogisticRegression.pkl"),
+}
 loaded_models = {}
 
 for nom_modele, chemin in MODELS.items():

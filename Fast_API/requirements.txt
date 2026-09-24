@@ -8,3 +8,8 @@ numpy>=1.26
 # utilisée pour entraîner/sauvegarder le modèle (.pkl), sinon vous
 # aurez des InconsistentVersionWarning voire des erreurs de chargement.
 scikit-learn==1.9.0
+
+# --- Base de données PostgreSQL ---
+sqlalchemy==2.0.35
+psycopg[binary]==3.2.3
+httpx

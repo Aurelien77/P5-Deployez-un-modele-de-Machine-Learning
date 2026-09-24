@@ -1,0 +1,64 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres_rh_db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: rh_predictions_db
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d rh_predictions_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - default
+
+  db-init-csv:
+    image: ${CI_REGISTRY_IMAGE}/api:latest
+    container_name: db_init_csv
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: rh_predictions_db
+      DATA_DIR: /app/Data
+    volumes:
+      - ../Data:/app/Data:ro
+    command: ["python", "script/init_db_from_csv.py"]
+    networks:
+      - default
+
+  api:
+    image: ${CI_REGISTRY_IMAGE}/api:latest
+    container_name: fastapi_app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      db-init-csv:
+        condition: service_completed_successfully
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: rh_predictions_db
+    volumes:
+      - ./modeles:/app/modeles
+    networks:
+      - default
+      - edge-network
+
+volumes:
+  pgdata:
+
+networks:
+  default:
+  edge-network:
+    external: true
