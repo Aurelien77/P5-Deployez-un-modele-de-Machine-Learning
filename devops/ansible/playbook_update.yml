@@ -1,0 +1,47 @@
+---
+- name: Update P5_predictions on production server
+  hosts: production
+  become: true
+
+  vars_files:
+    - vault.yml
+
+  vars:
+    app_dir: /app/P5_predictions
+    ci_registry_image: ghcr.io/aurelien77/p5_predictions
+
+  tasks:
+
+    - name: Copy latest docker-compose.prod.yml to server
+      copy:
+        src: ../../docker-compose.prod.yml
+        dest: "{{ app_dir }}/devops/docker-compose.prod.yml"
+        mode: '0644'
+
+    - name: Copy latest .env.prod to server
+      template:
+        src: templates/env.prod.j2
+        dest: "{{ app_dir }}/devops/.env.prod"
+        mode: '0600'
+
+    - name: Login to GitHub Container Registry
+      shell: |
+        docker login ghcr.io -u {{ registry_user }} -p {{ registry_token }}
+      no_log: true
+
+    - name: Pull image for this commit
+      shell: |
+        docker pull {{ ci_registry_image }}/api:{{ ci_commit_sha | default('latest') }}
+        docker tag {{ ci_registry_image }}/api:{{ ci_commit_sha | default('latest') }} {{ ci_registry_image }}/api:latest
+
+    - name: Recreate containers with the new image
+      shell: |
+        cd {{ app_dir }} && \
+        CI_REGISTRY_IMAGE={{ ci_registry_image }} \
+        docker compose --env-file devops/.env.prod -f devops/docker-compose.prod.yml up -d
+      environment:
+        CI_REGISTRY_IMAGE: "{{ ci_registry_image }}"
+
+    - name: Clean up dangling images
+      shell: docker image prune -f
+      changed_when: false
