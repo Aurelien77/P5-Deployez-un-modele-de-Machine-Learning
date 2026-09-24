@@ -11,6 +11,17 @@
     ci_registry_image: ghcr.io/aurelien77/p5-deployez-un-modele-de-machine-learning
 
   tasks:
+    - name: Créer les répertoires applicatifs
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - "{{ app_dir }}"
+        - "{{ app_dir }}/devops"
+        - "{{ app_dir }}/Data"
+        - "{{ app_dir }}/devops/modeles"
+
     - name: Copier docker-compose.prod.yml
       ansible.builtin.copy:
         src: "{{ playbook_dir }}/../docker-compose.prod.yml"
@@ -22,6 +33,18 @@
         src: templates/env.prod.j2
         dest: "{{ app_dir }}/devops/.env.prod"
         mode: "0600"
+
+    - name: Synchroniser Data (CSV) vers le serveur
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../Data/"
+        dest: "{{ app_dir }}/Data/"
+        mode: "0644"
+
+    - name: Synchroniser les modèles vers devops/modeles
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../Fast_API/modeles/"
+        dest: "{{ app_dir }}/devops/modeles/"
+        mode: "0644"
 
     - name: Login GitHub Container Registry
       ansible.builtin.shell: |
@@ -38,3 +61,38 @@
         chdir: "{{ app_dir }}"
       environment:
         CI_REGISTRY_IMAGE: "{{ ci_registry_image }}"
+      register: compose_up
+      failed_when: false
+
+    - name: Afficher stdout / stderr de compose
+      ansible.builtin.debug:
+        msg: |
+          rc={{ compose_up.rc }}
+          --- stdout ---
+          {{ compose_up.stdout }}
+          --- stderr ---
+          {{ compose_up.stderr }}
+
+    - name: Logs des conteneurs en cas d'échec
+      ansible.builtin.shell: |
+        docker compose \
+          --env-file devops/.env.prod \
+          -f devops/docker-compose.prod.yml \
+          logs --tail=80
+      args:
+        chdir: "{{ app_dir }}"
+      environment:
+        CI_REGISTRY_IMAGE: "{{ ci_registry_image }}"
+      register: compose_logs
+      when: compose_up.rc != 0
+      failed_when: false
+
+    - name: Afficher les logs Compose
+      ansible.builtin.debug:
+        var: compose_logs.stdout
+      when: compose_up.rc != 0
+
+    - name: Échouer si compose up a raté
+      ansible.builtin.fail:
+        msg: "docker compose up a échoué (rc={{ compose_up.rc }}). Voir les logs ci-dessus."
+      when: compose_up.rc != 0
