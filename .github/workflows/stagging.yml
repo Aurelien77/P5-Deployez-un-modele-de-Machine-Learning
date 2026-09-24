@@ -233,7 +233,8 @@ jobs:
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_p5_predictions
+          chmod 600 ~/.ssh/id_rsa ~/.ssh/deploy_p5_predictions
           ssh-keyscan -H "${{ secrets.PROD_HOST }}" >> ~/.ssh/known_hosts
 
       - name: Write vault password file
@@ -247,8 +248,9 @@ jobs:
             -e "ci_commit_sha=${{ needs.build-and-push.outputs.image_tag }}" \
             -e "ci_registry_image=ghcr.io/${{ needs.build-and-push.outputs.image_repo }}" \
             -e "registry_token=${{ secrets.GITHUB_TOKEN }}" \
-            -e "registry_user=${{ github.actor }}"
+            -e "registry_user=${{ github.actor }}" \
+            -e "ansible_ssh_private_key_file=/home/runner/.ssh/id_rsa"
 
       - name: Cleanup secrets
         if: always()
-        run: rm -f /tmp/vault_pass.txt ~/.ssh/id_rsa
+        run: rm -f /tmp/vault_pass.txt ~/.ssh/id_rsa ~/.ssh/deploy_p5_predictions
