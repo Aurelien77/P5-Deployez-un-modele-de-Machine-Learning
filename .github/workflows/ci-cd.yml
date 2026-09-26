@@ -8,14 +8,9 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME_API: ${{ github.repository }}/api
-  IMAGE_NAME_FRONTEND: ${{ github.repository }}/frontend
 
 jobs:
 
-  # ============================================================
-  # TESTS - STAGGING
-  # ============================================================
   test:
     if: github.ref == 'refs/heads/Stagging'
     runs-on: ubuntu-latest
@@ -122,7 +117,7 @@ jobs:
           DB_NAME: rh_predictions_db
           PYTHONPATH: .
         run: |
-          echo "## 📊 Rapport de couverture" >> $GITHUB_STEP_SUMMARY
+          echo "## Rapport de couverture" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo '```text' >> $GITHUB_STEP_SUMMARY
           python -m pytest tests/test_api.py \
@@ -155,19 +150,12 @@ jobs:
           path: test-results.xml
           retention-days: 30
 
-
-  # ============================================================
-  # BUILD & PUSH - MAIN
-  # Construit et pousse l'image à chaque push sur Main.
-  # Ne déploie PAS encore : c'est le job "deploy" qui s'en charge,
-  # et lui seul attend une validation manuelle.
-  # ============================================================
   build-and-push:
     if: github.ref == 'refs/heads/Main'
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write   # nécessaire pour pousser sur ghcr.io
+      packages: write
 
     outputs:
       image_tag: ${{ steps.meta.outputs.image_tag }}
@@ -181,11 +169,15 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}   # fourni automatiquement, pas de secret à créer
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set image tag
         id: meta
-        run: echo "image_tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+        run: |
+          repo=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')
+          echo "image_tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "image_api=${{ env.REGISTRY }}/${repo}/api" >> "$GITHUB_OUTPUT"
+          echo "image_frontend=${{ env.REGISTRY }}/${repo}/frontend" >> "$GITHUB_OUTPUT"
 
       - name: Build and push API
         uses: docker/build-push-action@v6
@@ -193,8 +185,8 @@ jobs:
           context: ./backend
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_API }}:${{ steps.meta.outputs.image_tag }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_API }}:latest
+            ${{ steps.meta.outputs.image_api }}:${{ steps.meta.outputs.image_tag }}
+            ${{ steps.meta.outputs.image_api }}:latest
 
       - name: Build and push frontend
         uses: docker/build-push-action@v6
@@ -202,16 +194,9 @@ jobs:
           context: ./frontend
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_FRONTEND }}:${{ steps.meta.outputs.image_tag }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_FRONTEND }}:latest
+            ${{ steps.meta.outputs.image_frontend }}:${{ steps.meta.outputs.image_tag }}
+            ${{ steps.meta.outputs.image_frontend }}:latest
 
-
-  # ============================================================
-  # DEPLOY - MAIN (validation manuelle obligatoire)
-  # Le job se met en PAUSE ici et affiche un bouton "Review deployments"
-  # tant que l'environment "production" n'est pas approuvé.
-  # Cf. Settings > Environments > production > Required reviewers
-  # ============================================================
   deploy:
     if: github.ref == 'refs/heads/Main'
     needs: build-and-push
@@ -221,7 +206,7 @@ jobs:
       url: https://predictions.1dream.art
     permissions:
       contents: read
-      packages: read   # le GITHUB_TOKEN doit pouvoir lire le package pour le pull côté serveur
+      packages: read
 
     steps:
       - name: Checkout code
