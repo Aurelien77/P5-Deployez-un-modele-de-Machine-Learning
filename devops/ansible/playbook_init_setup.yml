@@ -1,5 +1,5 @@
 ---
-- name: Setup P5_predictions production server (premier déploiement)
+- name: Premier deploiement P5 sur le serveur
   hosts: production
   become: true
 
@@ -12,72 +12,52 @@
     edge_network_name: edge-network
 
   tasks:
-    - name: Vérifier que les secrets du vault sont définis
-      ansible.builtin.assert:
-        that:
-          - vault_db_password is defined and vault_db_password | length > 0
-          - registry_user is defined and registry_user | length > 0
-          - registry_token is defined and registry_token | length > 0
-        fail_msg: >-
-          vault.yml doit contenir vault_db_password, registry_user
-          et registry_token (PAT GitHub read:packages, pas un glpat).
-
-    - name: Installer les paquets requis
-      ansible.builtin.apt:
+    - name: Installer git curl et le plugin Docker Compose
+      apt:
         name:
           - git
           - curl
           - docker-compose-plugin
         state: present
-        update_cache: true
+        update_cache: yes
 
-    - name: Créer les répertoires applicatifs
-      ansible.builtin.file:
-        path: "{{ item }}"
+    - name: Creer le dossier de l'application
+      file:
+        path: "{{ app_dir }}/devops"
         state: directory
         mode: "0755"
-      loop:
-        - "{{ app_dir }}"
-        - "{{ app_dir }}/devops"
 
     - name: Copier docker-compose.prod.yml
-      ansible.builtin.copy:
-        src: "{{ playbook_dir }}/../docker-compose.prod.yml"
+      copy:
+        src: ../../docker-compose.prod.yml
         dest: "{{ app_dir }}/devops/docker-compose.prod.yml"
         mode: "0644"
 
-    - name: Générer .env.prod
-      ansible.builtin.template:
+    - name: Generer le fichier .env.prod
+      template:
         src: templates/env.prod.j2
         dest: "{{ app_dir }}/devops/.env.prod"
         mode: "0600"
 
-    - name: S'assurer que edge-network existe
-      ansible.builtin.shell: |
+    - name: Creer le reseau Docker edge-network s'il n'existe pas
+      shell: |
         docker network inspect {{ edge_network_name }} >/dev/null 2>&1 || \
         docker network create {{ edge_network_name }}
-      register: edge_network
-      changed_when: "'Created network' in (edge_network.stdout | default(''))"
+      changed_when: false
 
-    - name: Login GitHub Container Registry
-      ansible.builtin.shell: |
-        echo "{{ registry_token }}" | docker login ghcr.io -u "{{ registry_user }}" --password-stdin
+    - name: Login GHCR
+      shell: docker login ghcr.io -u {{ registry_user }} -p {{ registry_token }}
       no_log: true
 
-    - name: Démarrer la stack (pull + up)
-      ansible.builtin.shell: |
-        docker compose \
-          --env-file devops/.env.prod \
-          -f devops/docker-compose.prod.yml \
-          up -d --pull always
-      args:
-        chdir: "{{ app_dir }}"
+    - name: Telecharger les images
+      shell: |
+        docker pull {{ ci_registry_image }}/api:latest
+        docker pull {{ ci_registry_image }}/frontend:latest
+
+    - name: Demarrer la stack
+      shell: |
+        cd {{ app_dir }} && \
+        CI_REGISTRY_IMAGE={{ ci_registry_image }} \
+        docker compose --env-file devops/.env.prod -f devops/docker-compose.prod.yml up -d
       environment:
         CI_REGISTRY_IMAGE: "{{ ci_registry_image }}"
-
-    - name: Rappel nginx predictions.1dream.art
-      ansible.builtin.debug:
-        msg: >
-          Vérifie le server{} predictions.1dream.art dans
-          /app/1reve/devops/nginx/nginx.conf puis :
-          docker exec nginx nginx -t && docker exec nginx nginx -s reload
