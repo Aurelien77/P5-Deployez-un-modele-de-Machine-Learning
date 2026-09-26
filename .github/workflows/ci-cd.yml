@@ -8,6 +8,8 @@ on:
 
 env:
   REGISTRY: ghcr.io
+  IMAGE_NAME_API: ${{ github.repository }}/api
+  IMAGE_NAME_FRONTEND: ${{ github.repository }}/frontend
 
 jobs:
 
@@ -50,8 +52,8 @@ jobs:
           echo "=== Racine du projet ==="
           ls -la
           echo ""
-          echo "=== Fast_API ==="
-          ls -la Fast_API
+          echo "=== backend ==="
+          ls -la backend
           echo ""
           echo "=== Tests ==="
           ls -la tests
@@ -59,7 +61,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r Fast_API/requirements.txt
+          pip install -r backend/requirements.txt
           pip install pytest pytest-cov httpx
 
       - name: Check Python imports
@@ -72,11 +74,11 @@ jobs:
           echo "=== Python path ==="
           python -c "import sys; print('\n'.join(sys.path))"
           echo ""
-          echo "=== Import Fast_API ==="
-          python -c "import Fast_API; print(Fast_API.__file__)"
+          echo "=== Import backend ==="
+          python -c "import backend; print(backend.__file__)"
           echo ""
-          echo "=== Import Fast_API.app ==="
-          python -c "from Fast_API.app import app; print('Import Fast_API.app OK')"
+          echo "=== Import backend.app ==="
+          python -c "from backend.app import app; print('Import backend.app OK')"
 
       - name: Check installed packages
         run: |
@@ -95,7 +97,7 @@ jobs:
           PYTHONPATH: .
         run: |
           pytest tests/test_api.py \
-            --cov=Fast_API \
+            --cov=backend \
             --cov-report=term-missing \
             --cov-report=html:htmlcov \
             --cov-report=xml:coverage.xml \
@@ -124,7 +126,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo '```text' >> $GITHUB_STEP_SUMMARY
           python -m pytest tests/test_api.py \
-            --cov=Fast_API \
+            --cov=backend \
             --cov-report=term-missing \
             --no-cov-on-fail 2>&1 | tail -n 30 >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
@@ -156,58 +158,59 @@ jobs:
 
   # ============================================================
   # BUILD & PUSH - MAIN
+  # Construit et pousse l'image à chaque push sur Main.
+  # Ne déploie PAS encore : c'est le job "deploy" qui s'en charge,
+  # et lui seul attend une validation manuelle.
   # ============================================================
   build-and-push:
     if: github.ref == 'refs/heads/Main'
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
+      packages: write   # nécessaire pour pousser sur ghcr.io
 
     outputs:
       image_tag: ${{ steps.meta.outputs.image_tag }}
-      image_repo: ${{ steps.meta.outputs.image_repo }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Locate Dockerfile
-        run: |
-          echo "=== Dockerfiles dans le repo ==="
-          find . -iname 'Dockerfile*' -not -path './.git/*' || true
-          echo ""
-          echo "=== Racine ==="
-          ls -la
 
       - name: Log in to ghcr.io
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ secrets.GITHUB_TOKEN }}   # fourni automatiquement, pas de secret à créer
 
-      - name: Set lowercase image name and tag
+      - name: Set image tag
         id: meta
-        run: |
-          IMAGE_REPO="$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
-          echo "image_repo=${IMAGE_REPO}" >> "$GITHUB_OUTPUT"
-          echo "image_tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-          echo "Image : ${{ env.REGISTRY }}/${IMAGE_REPO}/api"
+        run: echo "image_tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
-      - name: Build and push
+      - name: Build and push API
         uses: docker/build-push-action@v6
         with:
-          context: .
-          file: Fast_API/Dockerfile
+          context: ./backend
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ steps.meta.outputs.image_repo }}/api:${{ steps.meta.outputs.image_tag }}
-            ${{ env.REGISTRY }}/${{ steps.meta.outputs.image_repo }}/api:latest
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_API }}:${{ steps.meta.outputs.image_tag }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_API }}:latest
+
+      - name: Build and push frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_FRONTEND }}:${{ steps.meta.outputs.image_tag }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_FRONTEND }}:latest
 
 
   # ============================================================
   # DEPLOY - MAIN (validation manuelle obligatoire)
+  # Le job se met en PAUSE ici et affiche un bouton "Review deployments"
+  # tant que l'environment "production" n'est pas approuvé.
+  # Cf. Settings > Environments > production > Required reviewers
   # ============================================================
   deploy:
     if: github.ref == 'refs/heads/Main'
@@ -218,7 +221,7 @@ jobs:
       url: https://predictions.1dream.art
     permissions:
       contents: read
-      packages: read
+      packages: read   # le GITHUB_TOKEN doit pouvoir lire le package pour le pull côté serveur
 
     steps:
       - name: Checkout code
@@ -245,7 +248,6 @@ jobs:
           ansible-playbook -i inventory/hosts.yml playbook_update.yml \
             --vault-password-file /tmp/vault_pass.txt \
             -e "ci_commit_sha=${{ needs.build-and-push.outputs.image_tag }}" \
-            -e "ci_registry_image=ghcr.io/${{ needs.build-and-push.outputs.image_repo }}" \
             -e "registry_token=${{ secrets.GITHUB_TOKEN }}" \
             -e "registry_user=${{ github.actor }}"
 

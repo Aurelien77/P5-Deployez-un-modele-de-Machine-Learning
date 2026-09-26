@@ -1,5 +1,5 @@
 ---
-- name: Update P5_predictions production
+- name: Mise a jour P5 sur le serveur
   hosts: production
   become: true
 
@@ -12,29 +12,36 @@
 
   tasks:
     - name: Copier docker-compose.prod.yml
-      ansible.builtin.copy:
-        src: "{{ playbook_dir }}/../docker-compose.prod.yml"
+      copy:
+        src: ../../docker-compose.prod.yml
         dest: "{{ app_dir }}/devops/docker-compose.prod.yml"
         mode: "0644"
 
-    - name: Régénérer .env.prod
-      ansible.builtin.template:
+    - name: Regenerer .env.prod
+      template:
         src: templates/env.prod.j2
         dest: "{{ app_dir }}/devops/.env.prod"
         mode: "0600"
 
-    - name: Login GitHub Container Registry
-      ansible.builtin.shell: |
-        echo "{{ registry_token }}" | docker login ghcr.io -u "{{ registry_user }}" --password-stdin
+    - name: Login GHCR
+      shell: docker login ghcr.io -u {{ registry_user }} -p {{ registry_token }}
       no_log: true
 
-    - name: Mettre à jour la stack
-      ansible.builtin.shell: |
-        docker compose \
-          --env-file devops/.env.prod \
-          -f devops/docker-compose.prod.yml \
-          up -d --pull always --remove-orphans
-      args:
-        chdir: "{{ app_dir }}"
+    - name: Pull des images de ce commit
+      shell: |
+        docker pull {{ ci_registry_image }}/api:{{ ci_commit_sha | default('latest') }}
+        docker tag {{ ci_registry_image }}/api:{{ ci_commit_sha | default('latest') }} {{ ci_registry_image }}/api:latest
+        docker pull {{ ci_registry_image }}/frontend:{{ ci_commit_sha | default('latest') }}
+        docker tag {{ ci_registry_image }}/frontend:{{ ci_commit_sha | default('latest') }} {{ ci_registry_image }}/frontend:latest
+
+    - name: Relancer les conteneurs
+      shell: |
+        cd {{ app_dir }} && \
+        CI_REGISTRY_IMAGE={{ ci_registry_image }} \
+        docker compose --env-file devops/.env.prod -f devops/docker-compose.prod.yml up -d
       environment:
         CI_REGISTRY_IMAGE: "{{ ci_registry_image }}"
+
+    - name: Nettoyer les images inutiles
+      shell: docker image prune -f
+      changed_when: false

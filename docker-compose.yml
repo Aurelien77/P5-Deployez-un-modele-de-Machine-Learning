@@ -1,3 +1,4 @@
+
 services:
   postgres:
     image: postgres:15-alpine
@@ -18,7 +19,7 @@ services:
 
   db-init-csv:
     build:
-      context: .
+      context: ./backend
       dockerfile: Dockerfile
     container_name: db_init_csv
     depends_on:
@@ -32,12 +33,12 @@ services:
       DB_NAME: rh_predictions_db
       DATA_DIR: /app/Data
     volumes:
-      - ../Data:/app/Data:ro
+      - ./Data:/app/Data:ro
     command: ["python", "script/init_db_from_csv.py"]
 
   api:
     build:
-      context: .
+      context: ./backend
       dockerfile: Dockerfile
     container_name: fastapi_app
     depends_on:
@@ -54,7 +55,17 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./modeles:/app/modeles
+      - ./backend/modeles:/app/modeles
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: dockerfile
+    container_name: p5_frontend
+    depends_on:
+      - api
+    ports:
+      - "8080:80"
 
 volumes:
   pgdata:

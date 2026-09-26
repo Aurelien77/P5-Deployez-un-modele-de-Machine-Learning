@@ -1,87 +1,11 @@
 import os
-import json
-import time
+from typing import Any, Dict, List
+
 import joblib
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from pydantic import BaseModel
-from typing import Dict, Any, Optional, List
+from fastapi import HTTPException
 
-from sqlalchemy import create_engine, Column, Integer, String, Float, text
-from sqlalchemy.exc import OperationalError
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
-
-# --- CONFIGURATION DE LA BASE DE DONNÉES POSTGRESQL ---
-DB_USER = os.getenv("DB_USER", "postgres")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "mysecretpassword")
-DB_HOST = os.getenv("DB_HOST", "localhost")
-DB_PORT = os.getenv("DB_PORT", "5432")
-DB_NAME = os.getenv("DB_NAME", "rh_predictions_db")
-
-DATABASE_URL = f"postgresql+psycopg://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
-
-
-class ResultatDB(Base):
-    __tablename__ = "resultats"
-
-    id = Column(Integer, primary_key=True, index=True)
-    prenom = Column(String, default="John")
-    nom = Column(String, default="Doe")
-    modele_utilise = Column(String)
-    probabilite_de_quitter = Column(Float)
-    prediction = Column(Integer)
-    libelle_prediction = Column(String)
-    seuil_applique = Column(Float)
-    details = Column(String)
-
-
-def _attendre_et_creer_tables(tentatives: int = 10, delai: int = 3):
-    """Attend que Postgres soit prêt, puis vérifie/crée les tables (retry en filet de sécurité)."""
-    for i in range(tentatives):
-        try:
-            Base.metadata.create_all(bind=engine)
-            print("Connexion DB OK, tables vérifiées/créées.")
-            return
-        except OperationalError as e:
-            print(f"DB pas encore prête (essai {i + 1}/{tentatives}) : {e}")
-            time.sleep(delai)
-    raise RuntimeError("Impossible de se connecter à la base après plusieurs tentatives.")
-
-
-_attendre_et_creer_tables()
-
-
-def _assurer_colonne_details():
-    try:
-        with engine.connect() as conn:
-            conn.execute(text("ALTER TABLE resultats ADD COLUMN IF NOT EXISTS details TEXT"))
-            conn.commit()
-    except Exception as exc:
-        print(f"Note migration colonne details : {exc}")
-
-
-_assurer_colonne_details()
-
-# --- INITIALISATION FASTAPI ---
-app = FastAPI(title="API Prédiction RH & Sauvegarde")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Colonnes réellement attendues par le Pipeline LogisticRegression
 COLONNES_MODELE = [
     "age",
     "revenu_mensuel",
@@ -102,10 +26,48 @@ COLONNES_MODELE = [
 
 COLONNES_PAR_DEFAUT = COLONNES_MODELE.copy()
 
-CLES_MODELE_POSSIBLES = ["model", "modele", "estimator", "clf", "classifier", "pipeline", "best_model", "best_estimator"]
-CLES_SCALER_POSSIBLES = ["scaler", "preprocessor", "preprocesseur", "transformer", "scaler_x", "encoder"]
-CLES_COLONNES_POSSIBLES = ["columns", "colonnes", "features", "feature_names", "feature_names_in_", "X_columns"]
+CLES_MODELE_POSSIBLES = [
+    "model", "modele", "estimator", "clf", "classifier",
+    "pipeline", "best_model", "best_estimator",
+]
+CLES_SCALER_POSSIBLES = [
+    "scaler", "preprocessor", "preprocesseur", "transformer", "scaler_x", "encoder",
+]
+CLES_COLONNES_POSSIBLES = [
+    "columns", "colonnes", "features", "feature_names", "feature_names_in_", "X_columns",
+]
 CLES_SEUIL_POSSIBLES = ["threshold", "seuil", "best_threshold", "optimal_threshold"]
+
+COLONNES_CATEGORIELLES = [
+    "statut_marital",
+    "frequence_deplacement",
+    "heure_supplementaires",
+]
+
+ENCODAGES_CATEGORIELS = {
+    "heure_supplementaires": {
+        "non": 0, "no": 0, "0": 0, "false": 0,
+        "oui": 1, "yes": 1, "1": 1, "true": 1,
+    },
+    "frequence_deplacement": {
+        "aucun": 0, "aucune": 0, "non-travel": 0, "nontravel": 0, "0": 0,
+        "occasionnel": 1, "travel_rarely": 1, "travelrarely": 1, "rare": 1, "1": 1,
+        "frequent": 2, "fréquent": 2, "travel_frequently": 2, "travelfrequently": 2, "2": 2,
+    },
+    "statut_marital": {
+        "célibataire": 0, "celibataire": 0, "single": 0, "0": 0,
+        "marié(e)": 1, "marie(e)": 1, "marié": 1, "marie": 1, "married": 1, "1": 1,
+        "divorcé(e)": 2, "divorce(e)": 2, "divorcé": 2, "divorce": 2, "divorced": 2, "2": 2,
+    },
+}
+
+_BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+MODELS = {
+    "top1": os.path.join(_BASE_DIR, "modeles", "LogisticRegression.pkl"),
+}
+
+loaded_models: Dict[str, dict] = {}
 
 
 def _nom_type(obj) -> str:
@@ -141,7 +103,6 @@ def extraire_colonnes_par_role(modele) -> dict:
             except TypeError:
                 continue
 
-            etapes = []
             if hasattr(trans, "named_steps"):
                 etapes = list(trans.named_steps.values())
             else:
@@ -162,12 +123,20 @@ def extraire_colonnes_par_role(modele) -> dict:
 
             if any("OneHot" in n for n in noms_etapes):
                 roles["onehot"].extend(cols_liste)
-            elif any(n in ("StandardScaler", "MinMaxScaler", "RobustScaler", "SimpleImputer", "FunctionTransformer") for n in noms_etapes):
+            elif any(
+                n in (
+                    "StandardScaler",
+                    "MinMaxScaler",
+                    "RobustScaler",
+                    "SimpleImputer",
+                    "FunctionTransformer",
+                )
+                for n in noms_etapes
+            ):
                 roles["numeriques"].extend(cols_liste)
             else:
                 roles["autres"].extend(cols_liste)
 
-    # dédoublonne en conservant l'ordre
     for cle in ("onehot", "numeriques", "autres"):
         vus = set()
         propres = []
@@ -180,7 +149,7 @@ def extraire_colonnes_par_role(modele) -> dict:
 
 
 def extraire_colonnes_du_modele(modele) -> List[str]:
-    """Essaie d'extraire feature_names_in_ d'un estimateur scikit-learn (brut, Pipeline, etc.)."""
+    """Essaie d'extraire feature_names_in_ d'un estimateur scikit-learn."""
     if modele is None:
         return []
     if hasattr(modele, "feature_names_in_"):
@@ -197,7 +166,13 @@ def extraire_colonnes_du_modele(modele) -> List[str]:
 
 
 def analyser_objet_charge(obj, nom_modele: str) -> dict:
-    resultat = {"model": None, "scaler": None, "colonnes": [], "seuil": None, "type_objet": str(type(obj))}
+    resultat = {
+        "model": None,
+        "scaler": None,
+        "colonnes": [],
+        "seuil": None,
+        "type_objet": str(type(obj)),
+    }
 
     if hasattr(obj, "predict"):
         resultat["model"] = obj
@@ -218,7 +193,9 @@ def analyser_objet_charge(obj, nom_modele: str) -> dict:
             for cle, valeur in obj.items():
                 if hasattr(valeur, "predict"):
                     resultat["model"] = valeur
-                    print(f"[{nom_modele}] Modèle trouvé par introspection sous la clé '{cle}' -> {type(valeur)}")
+                    print(
+                        f"[{nom_modele}] Modèle trouvé par introspection sous la clé '{cle}' -> {type(valeur)}"
+                    )
                     break
 
         for cle in CLES_SCALER_POSSIBLES:
@@ -257,30 +234,6 @@ def analyser_objet_charge(obj, nom_modele: str) -> dict:
     return resultat
 
 
-COLONNES_CATEGORIELLES = [
-    "statut_marital",
-    "frequence_deplacement",
-    "heure_supplementaires",
-]
-
-ENCODAGES_CATEGORIELS = {
-    "heure_supplementaires": {
-        "non": 0, "no": 0, "0": 0, "false": 0,
-        "oui": 1, "yes": 1, "1": 1, "true": 1,
-    },
-    "frequence_deplacement": {
-        "aucun": 0, "aucune": 0, "non-travel": 0, "nontravel": 0, "0": 0,
-        "occasionnel": 1, "travel_rarely": 1, "travelrarely": 1, "rare": 1, "1": 1,
-        "frequent": 2, "fréquent": 2, "travel_frequently": 2, "travelfrequently": 2, "2": 2,
-    },
-    "statut_marital": {
-        "célibataire": 0, "celibataire": 0, "single": 0, "0": 0,
-        "marié(e)": 1, "marie(e)": 1, "marié": 1, "marie": 1, "married": 1, "1": 1,
-        "divorcé(e)": 2, "divorce(e)": 2, "divorcé": 2, "divorce": 2, "divorced": 2, "2": 2,
-    },
-}
-
-
 def _to_float(valeur, defaut=0.0) -> float:
     try:
         if valeur is None or valeur == "":
@@ -307,15 +260,17 @@ def encoder_valeur_categorielle(colonne: str, valeur: Any) -> float:
     if code is None:
         raise HTTPException(
             status_code=422,
-            detail=f"Valeur inconnue pour '{colonne}' : {valeur}. "
-                   f"Valeurs attendues : {sorted(set(table.keys()))}",
+            detail=(
+                f"Valeur inconnue pour '{colonne}' : {valeur}. "
+                f"Valeurs attendues : {sorted(set(table.keys()))}"
+            ),
         )
     return float(code)
 
 
 def completer_features_calculees(features: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Calcule les 2 features d'ingénierie si elles sont absentes.
+    Calcule les features d'ingénierie si elles sont absentes.
     - formations_par_an = nb_formations_suivies / annee_experience_totale
     - poste_x_niveau    = niveau_hierarchique_poste * niveau_education
     """
@@ -363,11 +318,7 @@ def preparer_dataframe_mixte(features: Dict[str, Any], colonnes: List[str]) -> p
 
 
 def preparer_dataframe_aligne(features: Dict[str, Any], colonnes: List[str], roles: dict) -> pd.DataFrame:
-    """
-    Aligne les dtypes sur le ColumnTransformer réel du .pkl :
-    - colonnes OneHotEncoder -> str
-    - colonnes StandardScaler / FunctionTransformer -> float
-    """
+    """Aligne les dtypes sur le ColumnTransformer réel du .pkl."""
     f = completer_features_calculees(features)
     onehot = set(roles.get("onehot") or COLONNES_CATEGORIELLES)
     ligne = {}
@@ -397,7 +348,7 @@ def _proba_depuis_prediction(sortie) -> float:
 
 
 def appeler_modele(model, df_num: pd.DataFrame, df_mixte: pd.DataFrame, df_aligne: pd.DataFrame, scaler=None):
-    """Essaie les formats compatibles avec un ColumnTransformer (DataFrame obligatoire)."""
+    """Essaie les formats compatibles avec un ColumnTransformer."""
     candidats = [
         ("dataframe_aligne", df_aligne),
         ("dataframe_mixte", df_mixte),
@@ -419,74 +370,48 @@ def appeler_modele(model, df_num: pd.DataFrame, df_mixte: pd.DataFrame, df_align
     raise RuntimeError("Aucun format d'entrée n'a fonctionné. Détails : " + " | ".join(erreurs))
 
 
-# --- CHARGEMENT DES MODÈLES MACHINE LEARNING ---
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+def charger_modeles() -> Dict[str, dict]:
+    """Charge les fichiers .pkl au démarrage et remplit loaded_models."""
+    loaded_models.clear()
+    for nom_modele, chemin in MODELS.items():
+        if os.path.exists(chemin):
+            try:
+                obj_brut = joblib.load(chemin)
+                print(f"\n--- Chargement modèle '{nom_modele}' ---")
+                info = analyser_objet_charge(obj_brut, nom_modele)
 
-MODELS = {
-    "top1": os.path.join(BASE_DIR, "modeles", "LogisticRegression.pkl"),
-}
-loaded_models = {}
-
-for nom_modele, chemin in MODELS.items():
-    if os.path.exists(chemin):
-        try:
-            obj_brut = joblib.load(chemin)
-            print(f"\n--- Chargement modèle '{nom_modele}' ---")
-            info = analyser_objet_charge(obj_brut, nom_modele)
-
-            if info["model"] is not None:
-                if not info["colonnes"]:
-                    info["colonnes"] = COLONNES_MODELE.copy()
-                if info["seuil"] is None:
-                    info["seuil"] = 0.37
-                info["roles"] = extraire_colonnes_par_role(info["model"])
-                loaded_models[nom_modele] = info
-                print(
-                    f"[{nom_modele}] -> {len(info['colonnes'])} colonnes, "
-                    f"scaler={'oui' if info['scaler'] is not None else 'non'}, "
-                    f"seuil_sauve={info['seuil']}"
-                )
-                print(f"[{nom_modele}] Structure ColumnTransformer : {info['roles']['detail']}")
-                print(f"[{nom_modele}] Colonnes OneHot : {info['roles']['onehot']}")
-                print(f"[{nom_modele}] Colonnes numériques : {info['roles']['numeriques']}")
-            else:
-                print(f"[{nom_modele}] Échec : impossible d'identifier un modèle utilisable dans le fichier.")
-            print("--- Fin chargement ---\n")
-
-        except Exception as e:
-            print(f"Erreur lors du chargement du modèle {nom_modele}: {e}")
-    else:
-        print(f"Attention : Le fichier {chemin} est introuvable.")
+                if info["model"] is not None:
+                    if not info["colonnes"]:
+                        info["colonnes"] = COLONNES_MODELE.copy()
+                    if info["seuil"] is None:
+                        info["seuil"] = 0.37
+                    info["roles"] = extraire_colonnes_par_role(info["model"])
+                    loaded_models[nom_modele] = info
+                    print(
+                        f"[{nom_modele}] -> {len(info['colonnes'])} colonnes, "
+                        f"scaler={'oui' if info['scaler'] is not None else 'non'}, "
+                        f"seuil_sauve={info['seuil']}"
+                    )
+                    print(f"[{nom_modele}] Structure ColumnTransformer : {info['roles']['detail']}")
+                    print(f"[{nom_modele}] Colonnes OneHot : {info['roles']['onehot']}")
+                    print(f"[{nom_modele}] Colonnes numériques : {info['roles']['numeriques']}")
+                else:
+                    print(f"[{nom_modele}] Échec : impossible d'identifier un modèle utilisable dans le fichier.")
+                print("--- Fin chargement ---\n")
+            except Exception as e:
+                print(f"Erreur lors du chargement du modèle {nom_modele}: {e}")
+        else:
+            print(f"Attention : Le fichier {chemin} est introuvable.")
+    return loaded_models
 
 
-class PredictionRequest(BaseModel):
-    modele: str
-    features: Dict[str, Any]
-    seuil: float = 0.37
-
-
-class SauvegardeRequest(BaseModel):
-    prenom: Optional[str] = "John"
-    nom: Optional[str] = "Doe"
-    modele_utilise: str
-    probabilite_de_quitter: float
-    prediction: int
-    libelle_prediction: str
-    seuil_applique: float
-    features: Dict[str, Any] = {}
-
-
-@app.get("/")
-def read_root():
-    if os.path.exists("index.html"):
-        return FileResponse("index.html")
-    raise HTTPException(status_code=404, detail="Fichier index.html introuvable dans le dossier du projet.")
-
-
-@app.get("/colonnes")
-def get_colonnes(modele: str):
+def obtenir_colonnes(modele: str) -> dict:
     if modele not in loaded_models:
-        return {"colonnes": COLONNES_PAR_DEFAUT, "source": "defaut_modele_non_charge", "seuil": 0.37}
+        return {
+            "colonnes": COLONNES_PAR_DEFAUT,
+            "source": "defaut_modele_non_charge",
+            "seuil": 0.37,
+        }
 
     cols = loaded_models[modele]["colonnes"] or COLONNES_PAR_DEFAUT
     return {
@@ -496,8 +421,7 @@ def get_colonnes(modele: str):
     }
 
 
-@app.get("/debug/modele/{modele}")
-def debug_modele(modele: str):
+def debug_modele(modele: str) -> dict:
     if modele not in loaded_models:
         raise HTTPException(status_code=404, detail=f"Modèle '{modele}' non chargé ou non identifiable.")
 
@@ -513,18 +437,17 @@ def debug_modele(modele: str):
     }
 
 
-@app.post("/predict")
-def predict(data: PredictionRequest):
-    if data.modele not in loaded_models:
-        raise HTTPException(status_code=404, detail=f"Modèle '{data.modele}' introuvable ou non chargé.")
+def predire(modele: str, features: Dict[str, Any], seuil: float) -> dict:
+    if modele not in loaded_models:
+        raise HTTPException(status_code=404, detail=f"Modèle '{modele}' introuvable ou non chargé.")
 
-    info = loaded_models[data.modele]
+    info = loaded_models[modele]
     model = info["model"]
     scaler = info["scaler"]
     colonnes = info["colonnes"] or COLONNES_MODELE
 
     try:
-        features_completes = completer_features_calculees(data.features)
+        features_completes = completer_features_calculees(features)
         roles = info.get("roles") or extraire_colonnes_par_role(model)
         df_num = preparer_dataframe_numerique(features_completes, colonnes)
         df_mixte = preparer_dataframe_mixte(features_completes, colonnes)
@@ -533,13 +456,13 @@ def predict(data: PredictionRequest):
         proba, format_utilise = appeler_modele(
             model, df_num, df_mixte, df_aligne, scaler=scaler
         )
-        prediction_finale = 1 if proba >= data.seuil else 0
+        prediction_finale = 1 if proba >= seuil else 0
 
         return {
-            "modele_utilise": data.modele,
+            "modele_utilise": modele,
             "probabilite": proba,
             "prediction": prediction_finale,
-            "seuil_utilise": data.seuil,
+            "seuil_utilise": seuil,
             "colonnes_utilisees": colonnes,
             "format_entree": format_utilise,
         }
@@ -547,69 +470,3 @@ def predict(data: PredictionRequest):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur lors de la prédiction : {str(e)}")
-
-
-@app.post("/sauvegarder")
-def sauvegarder_prediction(data: SauvegardeRequest):
-    db = SessionLocal()
-    try:
-        nouveau_resultat = ResultatDB(
-            prenom=data.prenom,
-            nom=data.nom,
-            modele_utilise=data.modele_utilise,
-            probabilite_de_quitter=data.probabilite_de_quitter,
-            prediction=data.prediction,
-            libelle_prediction=data.libelle_prediction,
-            seuil_applique=data.seuil_applique,
-            details=json.dumps(data.features, ensure_ascii=False),
-        )
-        db.add(nouveau_resultat)
-        db.commit()
-        db.refresh(nouveau_resultat)
-
-        return {
-            "message": "Enregistré avec succès en base !",
-            "id": nouveau_resultat.id,
-            "employe": f"{nouveau_resultat.prenom} {nouveau_resultat.nom}",
-        }
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        db.close()
-
-
-@app.get("/resultats")
-def lister_resultats(limit: int = 20):
-    db = SessionLocal()
-    try:
-        lignes = (
-            db.query(ResultatDB)
-            .order_by(ResultatDB.id.desc())
-            .limit(max(1, min(limit, 100)))
-            .all()
-        )
-        sortie = []
-        for row in lignes:
-            details = {}
-            if row.details:
-                try:
-                    details = json.loads(row.details)
-                except json.JSONDecodeError:
-                    details = {"brut": row.details}
-            sortie.append({
-                "id": row.id,
-                "prenom": row.prenom,
-                "nom": row.nom,
-                "modele_utilise": row.modele_utilise,
-                "probabilite_de_quitter": row.probabilite_de_quitter,
-                "prediction": row.prediction,
-                "libelle_prediction": row.libelle_prediction,
-                "seuil_applique": row.seuil_applique,
-                "details": details,
-            })
-        return {"nb": len(sortie), "resultats": sortie}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        db.close()

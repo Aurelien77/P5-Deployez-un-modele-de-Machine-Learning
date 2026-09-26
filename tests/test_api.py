@@ -1,7 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 # Importez votre application FastAPI (adaptez le chemin d'import selon votre structure)
-from Fast_API.app import app, COLONNES_MODELE
+from backend.app import app, COLONNES_MODELE
 
 client = TestClient(app)
 
