@@ -16,43 +16,28 @@ services:
     networks:
       - default
 
-  db-init-csv:
-    image: ${CI_REGISTRY_IMAGE}/api:latest
-    container_name: db_init_csv
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      DB_HOST: postgres
-      DB_PORT: 5432
-      DB_USER: postgres
-      DB_PASSWORD: ${DB_PASSWORD}
-      DB_NAME: rh_predictions_db
-      DATA_DIR: /app/Data
-    volumes:
-      - ../Data:/app/Data:ro
-    command: ["python", "script/init_db_from_csv.py"]
-    networks:
-      - default
-
   api:
     image: ${CI_REGISTRY_IMAGE}/api:latest
     container_name: fastapi_app
     depends_on:
       postgres:
         condition: service_healthy
-      db-init-csv:
-        condition: service_completed_successfully
     environment:
       DB_HOST: postgres
       DB_PORT: 5432
       DB_USER: postgres
       DB_PASSWORD: ${DB_PASSWORD}
       DB_NAME: rh_predictions_db
-    volumes:
-      - ./modeles:/app/modeles
     networks:
       - default
+      - edge-network
+
+  frontend:
+    image: ${CI_REGISTRY_IMAGE}/frontend:latest
+    container_name: p5_frontend
+    depends_on:
+      - api
+    networks:
       - edge-network
 
 volumes:
