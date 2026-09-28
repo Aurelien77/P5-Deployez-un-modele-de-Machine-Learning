@@ -1,0 +1,27 @@
+# Secrets et environnements locaux
+.env
+.env.local
+.env.prod
+devops/.env.prod
+
+# Clés SSH
+*.pem
+id_rsa
+id_rsa.pub
+deploy_p5_predictions
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

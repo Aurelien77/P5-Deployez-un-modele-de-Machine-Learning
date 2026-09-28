@@ -1,12 +1,11 @@
-
 services:
   postgres:
     image: postgres:15-alpine
     container_name: postgres_rh_db
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: mysecretpassword
-      POSTGRES_DB: rh_predictions_db
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME:-rh_predictions_db}
     ports:
       - "5432:5432"
     volumes:
@@ -28,13 +27,13 @@ services:
     environment:
       DB_HOST: postgres
       DB_PORT: 5432
-      DB_USER: postgres
-      DB_PASSWORD: mysecretpassword
-      DB_NAME: rh_predictions_db
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${DB_NAME:-rh_predictions_db}
       DATA_DIR: /app/Data
     volumes:
       - ./Data:/app/Data:ro
-    command: ["python", "script/init_db_from_csv.py"]
+    command: ["python", "script/create_db.py.py"]
 
   api:
     build:
@@ -49,9 +48,9 @@ services:
     environment:
       DB_HOST: postgres
       DB_PORT: 5432
-      DB_USER: postgres
-      DB_PASSWORD: mysecretpassword
-      DB_NAME: rh_predictions_db
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${DB_NAME:-rh_predictions_db}
     ports:
       - "8000:8000"
     volumes:

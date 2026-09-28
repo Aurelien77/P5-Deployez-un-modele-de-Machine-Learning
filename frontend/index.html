@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Testeur de Modèle — Prédiction RH</title>
+    <title>Prédiction RH</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -14,26 +14,15 @@
     <div class="config-section">
         <div class="config-row">
             <div style="flex: 1;">
-                <label for="input-prenom">Prénom :</label>
-                <input type="text" id="input-prenom" value="John">
-            </div>
-            <div style="flex: 1;">
-                <label for="input-nom">Nom :</label>
-                <input type="text" id="input-nom" value="Doe">
-            </div>
-        </div>
-        <div class="config-row">
-            <div style="flex: 1;">
-                <label for="select-modele">Modèle à utiliser :</label>
-                <select id="select-modele">
-                    <option value="top1">LogisticRegression</option>
-                </select>
-            </div>
-            <div style="flex: 1;">
-                <label for="input-seuil">Seuil de décision :</label>
-                <input type="number" id="input-seuil" value="0.37" step="0.01" min="0" max="1">
+                <label for="recherche-annuaire">Rechercher un employé par id :</label>
+                <div style="display:flex; gap:8px; align-items:center;">
+                    <input type="text" id="recherche-annuaire" placeholder="ex. 85" style="flex:1;">
+                    <button type="button" id="btn-charger-id" style="width:auto; padding:8px 14px;">Charger</button>
+                </div>
+
             </div>
         </div>
+
     </div>
 
     <div class="calc-box">
@@ -115,10 +104,8 @@
         <p id="resultat-texte"></p>
 
         <hr style="margin: 15px 0; border: 0; border-top: 1px solid #a3e4d7;">
-        <button type="button" id="btn-sauvegarder" style="background-color: #27ae60; margin-top: 5px; width: auto; padding: 10px 20px;">
-            💾 Enregistrer cette prédiction en base de données
-        </button>
-        <span id="msg-sauvegarde" style="display: inline-block; margin-left: 15px; font-weight: bold;"></span>
+        <p class="hint">Chaque prédiction est enregistrée automatiquement dans <code>resultats</code>.</p>
+        <span id="msg-sauvegarde" style="display: inline-block; font-weight: bold;"></span>
     </div>
 
     <div id="historique">
@@ -240,14 +227,11 @@
     }
 
     async function chargerColonnes() {
-        const modele = document.getElementById("select-modele").value;
+        const modele = "top1";
         try {
             const response = await fetch(`${API_BASE}/colonnes?modele=${modele}`);
             const data = await response.json();
             colonnesActuelles = (data.colonnes && data.colonnes.length) ? data.colonnes : COLONNES_MODELE.slice();
-            if (typeof data.seuil === "number") {
-                document.getElementById("input-seuil").value = data.seuil;
-            }
         } catch (e) {
             console.error("Erreur lors du chargement des colonnes", e);
             colonnesActuelles = COLONNES_MODELE.slice();
@@ -279,8 +263,6 @@
                     <td>${r.prenom} ${r.nom}</td>
                     <td>${r.libelle_prediction}</td>
                     <td>${(r.probabilite_de_quitter * 100).toFixed(2)}%</td>
-                    <td>${(r.seuil_applique * 100).toFixed(0)}%</td>
-                    <td>${r.modele_utilise}</td>
                 </tr>
             `).join("");
             zone.innerHTML = `
@@ -288,7 +270,7 @@
                     <thead>
                         <tr>
                             <th>ID</th><th>Employé</th><th>Prédiction</th>
-                            <th>Risque</th><th>Seuil</th><th>Modèle</th>
+                            <th>Risque</th>
                         </tr>
                     </thead>
                     <tbody>${lignes}</tbody>
@@ -299,18 +281,71 @@
         }
     }
 
-    document.getElementById("select-modele").addEventListener("change", chargerColonnes);
+    
     window.addEventListener("DOMContentLoaded", () => {
         chargerColonnes();
         chargerResultats();
     });
 
+    let employeIdCourant = null;
+
+
+    function appliquerValeur(id, valeur) {
+        const el = document.getElementById(id);
+        if (!el || valeur === undefined || valeur === null) return;
+        el.value = valeur;
+    }
+
+    async function chargerFicheParId(identifiant) {
+        const idNum = parseInt(identifiant, 10);
+        if (!idNum) {
+            employeIdCourant = null;
+            return;
+        }
+        employeIdCourant = idNum;
+        try {
+            const response = await fetch(`${API_BASE}/employes/${idNum}`);
+            const data = await response.json();
+            if (!response.ok) throw new Error(JSON.stringify(data.detail || data));
+            const fiche = data.employe || {};
+            Object.keys(fiche).forEach((cle) => appliquerValeur(cle, fiche[cle]));
+            
+            if (typeof recalculerFeaturesDerivees === "function") {
+                recalculerFeaturesDerivees();
+            }
+        } catch (error) {
+            alert("Aucun employé pour l'id " + identifiant + ".");
+            console.error(error);
+        }
+    }
+
+document.getElementById("recherche-annuaire").addEventListener("input", function () {
+    clearTimeout(window._annuaireTimer);
+    const terme = this.value.trim();
+    if (!terme) employeIdCourant = null;
+    window._annuaireTimer = setTimeout(() => {
+        if (/^\d+$/.test(terme)) chargerFicheParId(terme);
+    }, 250);
+});
+
+    document.getElementById("recherche-annuaire").addEventListener("keydown", function (e) {
+        if (e.key === "Enter") {
+            e.preventDefault();
+            chargerFicheParId(this.value.trim());
+        }
+    });
+
+    document.getElementById("btn-charger-id").addEventListener("click", function () {
+        chargerFicheParId(document.getElementById("recherche-annuaire").value.trim());
+    });
+
+
     document.getElementById("prediction-form").addEventListener("submit", async function(e) {
         e.preventDefault();
         recalculerFeaturesDerivees();
 
-        const modeleChoisi = document.getElementById("select-modele").value;
-        const seuilSaisi = parseFloat(document.getElementById("input-seuil").value);
+        const modeleChoisi = "top1";
+        const seuilSaisi = 0.37;
 
         const features = {};
         colonnesActuelles.forEach(col => {
@@ -332,10 +367,16 @@
         features.poste = document.getElementById("poste").value;
         features.domaine_etude = document.getElementById("domaine_etude").value;
 
+        const prenomSaisi = "Employe";
+        const nomSaisi = employeIdCourant ? String(employeIdCourant) : "N/A";
+
         const payload = {
             modele: modeleChoisi,
             features: features,
-            seuil: seuilSaisi
+            seuil: seuilSaisi,
+            prenom: prenomSaisi,
+            nom: nomSaisi,
+            employe_id: employeIdCourant
         };
 
         try {
@@ -358,16 +399,10 @@
                 const libelleTexteBrut = data.prediction === 1 ? "Quitte" : "Reste";
 
                 resultatTexte.innerHTML = `
-                    <strong>Modèle utilisé :</strong> ${data.modele_utilise} <br>
-                    <strong>Prédiction finale :</strong> ${libellePrediction} <br>
-                    <hr style="margin: 8px 0; border: 0; border-top: 1px solid #d1f2eb;">
+                    <strong>Prédiction :</strong> ${libellePrediction} <br>
                     <strong>Risque de départ :</strong> ${probaDepart.toFixed(2)}% <br>
-                    <strong>Probabilité de rester :</strong> ${probaRester.toFixed(2)}% <br>
-                    <strong>Seuil de décision :</strong> ${(data.seuil_utilise * 100).toFixed(0)}%
+                    <strong>Probabilité de rester :</strong> ${probaRester.toFixed(2)}%
                 `;
-
-                const prenomSaisi = document.getElementById("input-prenom").value.trim() || "John";
-                const nomSaisi = document.getElementById("input-nom").value.trim() || "Doe";
 
                 dernierePredictionData = {
                     prenom: prenomSaisi,
@@ -380,7 +415,15 @@
                     features: features
                 };
 
-                document.getElementById("msg-sauvegarde").innerText = "";
+                const msgSpan = document.getElementById("msg-sauvegarde");
+                if (data.enregistrement && data.enregistrement.id) {
+                    msgSpan.style.color = "#27ae60";
+                    msgSpan.innerText = "✔ Enregistré automatiquement #" + data.enregistrement.id + " pour " + prenomSaisi + " " + nomSaisi;
+                    chargerResultats();
+    
+                } else {
+                    msgSpan.innerText = "";
+                }
             } else {
                 alert("Erreur de l'API : " + JSON.stringify(data.detail));
             }
@@ -390,41 +433,6 @@
         }
     });
 
-    document.getElementById("btn-sauvegarder").addEventListener("click", async () => {
-        if (!dernierePredictionData) return;
-
-        const msgSpan = document.getElementById("msg-sauvegarde");
-        try {
-            const response = await fetch(`${API_BASE}/sauvegarder`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(dernierePredictionData)
-            });
-
-            const result = await response.json();
-            if (response.ok) {
-                msgSpan.style.color = "#27ae60";
-                msgSpan.innerText = "✔ Enregistré #" + result.id + " (" + dernierePredictionData.libelle_prediction + ") pour " + dernierePredictionData.prenom + " " + dernierePredictionData.nom + " !";
-                chargerResultats();
-            } else {
-                let erreurMsg = "Erreur serveur";
-                if (result.detail) {
-                    if (typeof result.detail === "string") {
-                        erreurMsg = result.detail;
-                    } else if (Array.isArray(result.detail)) {
-                        erreurMsg = result.detail.map(err => `${err.loc.join(".")} : ${err.msg}`).join(" | ");
-                    } else {
-                        erreurMsg = JSON.stringify(result.detail);
-                    }
-                }
-                throw new Error(erreurMsg);
-            }
-        } catch (error) {
-            msgSpan.style.color = "#c0392b";
-            msgSpan.innerText = "✖ Erreur : " + error.message;
-            console.error("Détail de l'erreur :", error);
-        }
-    });
 </script>
 
 </body>
