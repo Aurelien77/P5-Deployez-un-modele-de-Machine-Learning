@@ -13,7 +13,7 @@
   tasks:
     - name: Copier docker-compose.prod.yml
       copy:
-        src: ../../docker-compose.prod.yml
+        src: ../docker-compose.prod.yml
         dest: "{{ app_dir }}/devops/docker-compose.prod.yml"
         mode: "0644"
 

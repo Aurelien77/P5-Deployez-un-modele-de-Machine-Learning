@@ -1,0 +1,22 @@
+# semantic-release EXIGE 1 à 3 branches de release officielles.
+# Main est déclarée pour satisfaire cette règle.
+# Le job CI "version" ne s'exécute QUE sur Stagging → tags vX.Y.Z-rc.N
+# + artefact Actions "release-version". Main ne lance pas semantic-release.
+branches:
+  - name: Main
+  - name: Stagging
+    prerelease: rc
+
+plugins:
+  - "@semantic-release/commit-analyzer"
+  - "@semantic-release/release-notes-generator"
+  - - "@semantic-release/changelog"
+    - changelogFile: CHANGELOG.md
+  - - "@semantic-release/github"
+    - successComment: false
+      failCommentCondition: false
+  - - "@semantic-release/git"
+    - assets:
+        - CHANGELOG.md
+      message: "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
+tagFormat: "v${version}"
