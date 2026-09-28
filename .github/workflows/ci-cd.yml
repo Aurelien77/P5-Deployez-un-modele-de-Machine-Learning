@@ -2,9 +2,10 @@
 # GOLDEN PATH — pipeline CI/CD backend (+ images frontend)
 # =============================================================================
 #
-# Interrupteurs : .github/golden-path.env
+# Interrupteurs : golden-path.env (racine du dépôt)
 #   ENABLE_STAGING_TESTS=true|false
 #   ENABLE_PRODUCTION_RELEASE=true|false
+#   ENABLE_SEMANTIC_RELEASE=true|false
 #
 #   1. Tests (Stagging)
 #      ENABLE_STAGING_TESTS=true  →  git push origin Stagging
@@ -50,31 +51,34 @@ env:
 jobs:
 
   # ---------------------------------------------------------------------------
-  # Lit .github/golden-path.env (le fichier où on change true/false)
+  # Lit golden-path.env à la racine (active / désactive les jobs ci-dessous)
   # ---------------------------------------------------------------------------
   flags:
-    name: Lire les interrupteurs golden path
+    name: Lire golden-path.env
     runs-on: ubuntu-latest
     outputs:
       enable_staging_tests: ${{ steps.read.outputs.enable_staging_tests }}
       enable_production_release: ${{ steps.read.outputs.enable_production_release }}
+      enable_semantic_release: ${{ steps.read.outputs.enable_semantic_release }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Lire .github/golden-path.env
+      - name: Lire golden-path.env
         id: read
         run: |
-          echo "=== Contenu de .github/golden-path.env ==="
-          cat .github/golden-path.env
+          echo "=== Contenu de golden-path.env (racine) ==="
+          cat golden-path.env
           set -a
           # shellcheck disable=SC1091
-          source .github/golden-path.env
+          source golden-path.env
           set +a
           echo "enable_staging_tests=${ENABLE_STAGING_TESTS:-false}" >> "$GITHUB_OUTPUT"
           echo "enable_production_release=${ENABLE_PRODUCTION_RELEASE:-false}" >> "$GITHUB_OUTPUT"
+          echo "enable_semantic_release=${ENABLE_SEMANTIC_RELEASE:-false}" >> "$GITHUB_OUTPUT"
           echo "ENABLE_STAGING_TESTS=${ENABLE_STAGING_TESTS:-false}"
           echo "ENABLE_PRODUCTION_RELEASE=${ENABLE_PRODUCTION_RELEASE:-false}"
+          echo "ENABLE_SEMANTIC_RELEASE=${ENABLE_SEMANTIC_RELEASE:-false}"
 
   # ---------------------------------------------------------------------------
   # Chemin 1 — Stagging : tests automatiques
@@ -230,7 +234,84 @@ jobs:
           retention-days: 30
 
   # ---------------------------------------------------------------------------
-  # Chemin 2 — Main : build + publication des images (avant validation)
+  # Versionnement — UNIQUEMENT sur Stagging (après tests verts)
+  # Artefact Actions : release-version  (version.txt + version-prod.txt)
+  # Tag git          : vX.Y.Z-rc.N
+  # ---------------------------------------------------------------------------
+  version:
+    name: Semantic Release (tags + artefact)
+    needs: [flags, test]
+    if: >
+      always() &&
+      !cancelled() &&
+      needs.flags.outputs.enable_semantic_release == 'true' &&
+      github.ref == 'refs/heads/Stagging' &&
+      needs.test.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    outputs:
+      release_version: ${{ steps.pack.outputs.staging_version }}
+      prod_version: ${{ steps.pack.outputs.prod_version }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Semantic Release
+        id: release
+        uses: cycjimmy/semantic-release-action@v4
+        with:
+          semantic_version: 24
+          extra_plugins: |
+            @semantic-release/changelog@6
+            @semantic-release/git@10
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Préparer l'artefact de version
+        id: pack
+        run: |
+          mkdir -p version-artifact
+          staging="${{ steps.release.outputs.new_release_version }}"
+          if [ -z "$staging" ]; then
+            staging="${{ steps.release.outputs.last_release_version }}"
+          fi
+          if [ -z "$staging" ]; then
+            git fetch --tags origin
+            staging=$(git tag -l 'v*' --sort=-v:refname | sed 's/^v//' | head -n 1)
+          fi
+          if [ -z "$staging" ]; then
+            echo "Aucune version disponible (ni semantic-release, ni tag)."
+            exit 1
+          fi
+          prod="${staging%%-rc*}"
+          prod="${prod%%-RC*}"
+          echo "$staging" > version-artifact/version.txt
+          echo "$prod" > version-artifact/version-prod.txt
+          echo "staging_version=${staging}" >> "$GITHUB_OUTPUT"
+          echo "prod_version=${prod}" >> "$GITHUB_OUTPUT"
+          echo "Version Stagging : ${staging}"
+          echo "Version Main/prod : ${prod}"
+          cat version-artifact/version.txt
+          cat version-artifact/version-prod.txt
+
+      - name: Publier l'artefact release-version
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-version
+          path: version-artifact/
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # Build images — UNIQUEMENT sur Main
+  # Récupère l'artefact release-version produit sur Stagging
+  # (fallback : dernier tag git v* de origin/Stagging)
   # ---------------------------------------------------------------------------
   build-and-push:
     name: Build images (golden path Main)
@@ -248,6 +329,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      actions: read
 
     outputs:
       image_tag: ${{ steps.meta.outputs.image_tag }}
@@ -255,6 +337,51 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Récupérer l'artefact de version (dernier run Stagging)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p version-artifact
+          echo "Recherche de l'artefact release-version sur Stagging..."
+          mapfile -t RUN_IDS < <(gh run list \
+            --branch Stagging \
+            --workflow "CI/CD Pipeline" \
+            --status success \
+            --limit 20 \
+            --json databaseId \
+            --jq '.[].databaseId')
+          found=0
+          for run_id in "${RUN_IDS[@]:-}"; do
+            echo "Tentative run ${run_id}..."
+            if gh run download "$run_id" -n release-version --dir version-artifact 2>/dev/null; then
+              echo "Artefact trouvé sur le run ${run_id}"
+              found=1
+              break
+            fi
+          done
+          if [ "$found" != "1" ]; then
+            echo "Pas d'artefact Actions. Fallback sur les tags git de Stagging."
+            git fetch origin Stagging --tags --force
+            last=$(git tag -l 'v*' --sort=-v:refname | sed 's/^v//' | head -n 1)
+            if [ -z "$last" ]; then
+              echo "Aucune version Stagging trouvée (ni artefact, ni tag)."
+              echo "Pousse d'abord un versionnement sur Stagging."
+              exit 1
+            fi
+            prod="${last%%-rc*}"
+            echo "$last" > version-artifact/version.txt
+            echo "$prod" > version-artifact/version-prod.txt
+            echo "Version récupérée via tag : ${last}"
+          fi
+          echo "=== Contenu artefact ==="
+          ls -la version-artifact
+          cat version-artifact/version.txt
+          cat version-artifact/version-prod.txt
 
       - name: Log in to ghcr.io
         uses: docker/login-action@v3
@@ -263,13 +390,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set image tag
+      - name: Set image tag depuis l'artefact Stagging
         id: meta
         run: |
           repo=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')
-          echo "image_tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          staging=$(tr -d '[:space:]' < version-artifact/version.txt)
+          prod=$(tr -d '[:space:]' < version-artifact/version-prod.txt)
+          echo "image_tag=${prod}" >> "$GITHUB_OUTPUT"
+          echo "staging_version=${staging}" >> "$GITHUB_OUTPUT"
           echo "image_api=${{ env.REGISTRY }}/${repo}/api" >> "$GITHUB_OUTPUT"
           echo "image_frontend=${{ env.REGISTRY }}/${repo}/frontend" >> "$GITHUB_OUTPUT"
+          echo "Images taguées avec la version prod issue de Stagging : ${prod} (source ${staging})"
 
       - name: Build and push API
         uses: docker/build-push-action@v6

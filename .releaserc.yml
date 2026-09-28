@@ -1,0 +1,20 @@
+# Semantic Release tourne UNIQUEMENT sur Stagging.
+# Tag vX.Y.Z-rc.N + artefact Actions "release-version".
+# Main ne recalcule pas : il récupère l'artefact (ou le dernier tag Stagging).
+branches:
+  - name: Stagging
+    prerelease: rc
+
+plugins:
+  - "@semantic-release/commit-analyzer"
+  - "@semantic-release/release-notes-generator"
+  - - "@semantic-release/changelog"
+    - changelogFile: CHANGELOG.md
+  - - "@semantic-release/github"
+    - successComment: false
+      failTitle: false
+  - - "@semantic-release/git"
+    - assets:
+        - CHANGELOG.md
+      message: "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
+tagFormat: "v${version}"
