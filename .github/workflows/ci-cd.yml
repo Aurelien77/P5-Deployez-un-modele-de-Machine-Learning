@@ -457,9 +457,15 @@ jobs:
       - name: Setup SSH
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 700 ~/.ssh
+          # Même nom que devops/ansible/inventory/hosts.yml
+          # ansible_ssh_private_key_file: ~/.ssh/deploy_p5_predictions
+          printf '%s\n' "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_p5_predictions
+          chmod 600 ~/.ssh/deploy_p5_predictions
+          cp ~/.ssh/deploy_p5_predictions ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H "${{ secrets.PROD_HOST }}" >> ~/.ssh/known_hosts
+          ssh-keyscan -H "204.168.133.167" >> ~/.ssh/known_hosts || true
 
       - name: Write vault password file
         run: echo "${{ secrets.ANSIBLE_VAULT_PASSWORD }}" > /tmp/vault_pass.txt
@@ -475,4 +481,4 @@ jobs:
 
       - name: Cleanup secrets
         if: always()
-        run: rm -f /tmp/vault_pass.txt ~/.ssh/id_rsa
+        run: rm -f /tmp/vault_pass.txt ~/.ssh/id_rsa ~/.ssh/deploy_p5_predictions
