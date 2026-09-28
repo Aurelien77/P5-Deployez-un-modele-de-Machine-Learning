@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 
-from controllers import modele_controller
-from schemas.prediction import PredictionRequest
+from controllers import modele_controller, resultat_controller
+from schemas.prediction import PredictionRequest, SauvegardeRequest
 
 router = APIRouter(tags=["prediction"])
 
@@ -13,4 +13,19 @@ def get_colonnes(modele: str):
 
 @router.post("/predict")
 def predict(data: PredictionRequest):
-    return modele_controller.predire(data.modele, data.features, data.seuil)
+    sortie = modele_controller.predire(data.modele, data.features, data.seuil)
+    libelle = "Quitte" if sortie["prediction"] == 1 else "Reste"
+    enregistrement = resultat_controller.sauvegarder_prediction(
+        SauvegardeRequest(
+            prenom=data.prenom or "John",
+            nom=data.nom or "Doe",
+            modele_utilise=sortie["modele_utilise"],
+            probabilite_de_quitter=sortie["probabilite"],
+            prediction=sortie["prediction"],
+            libelle_prediction=libelle,
+            seuil_applique=sortie["seuil_utilise"],
+            features=data.features,
+        )
+    )
+    sortie["enregistrement"] = enregistrement
+    return sortie
