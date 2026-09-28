@@ -7,6 +7,8 @@ class PredictionRequest(BaseModel):
     modele: str
     features: Dict[str, Any]
     seuil: float = 0.37
+    prenom: Optional[str] = "John"
+    nom: Optional[str] = "Doe"
 
 
 class SauvegardeRequest(BaseModel):

@@ -5,8 +5,6 @@ Application de **prédiction RH** : une API FastAPI charge un modèle
 interface web permet de tester le modèle puis de sauvegarder le résultat
 en PostgreSQL.
 
-Le dépôt est découpé en trois zones :
-
 | Dossier | Rôle |
 |---------|------|
 | `backend/` | API, modèle ML, base de données |
@@ -15,9 +13,28 @@ Le dépôt est découpé en trois zones :
 | `tests/` | Tests pytest de l'API |
 | `Data/` | CSV d'initialisation de la base |
 
+---
+
 ## Lancer le projet en local
 
 Prérequis : Docker et Docker Compose.
+
+Les mots de passe **ne sont plus dans** `docker-compose.yml`.
+Compose lit un fichier **`.env`** à la racine (ignoré par git).
+
+```bash
+cp .env.example .env
+```
+
+Édite `.env` si besoin (Dev uniquement) :
+
+```env
+DB_USER=postgres
+DB_PASSWORD=mysecretpassword
+DB_NAME=rh_predictions_db
+```
+
+Puis :
 
 ```bash
 docker compose up --build
@@ -25,60 +42,58 @@ docker compose up --build
 
 - Frontend : http://localhost:8080
 - API / Swagger : http://localhost:8000/docs
-- PostgreSQL : `localhost:5432` (`postgres` / `mysecretpassword` / `rh_predictions_db`)
+- PostgreSQL : `localhost:5432` (valeurs de ton `.env`)
 
 Le service `db-init-csv` charge `Data/X.csv` et `Data/y.csv` au premier
 démarrage.
+
+### Fichiers d'environnement
+
+| Fichier | Dans git ? | Rôle |
+|---------|------------|------|
+| `.env.example` | oui | modèle sans secret, à copier |
+| `.env` | **non** | secrets Dev local |
+| `docker-compose.yml` | oui | stack Dev, lit `${DB_PASSWORD}` |
+| `devops/docker-compose.prod.yml` | oui | stack prod, lit `${DB_PASSWORD}` |
+| `devops/.env.prod` | **non** | généré sur le serveur par Ansible |
+| `devops/ansible/vault.yml` | oui (chiffré) | secret prod `vault_db_password` |
+
+Ne commite jamais `.env` ni `devops/.env.prod`. Voir `.gitignore`.
+
+La prod n'utilise pas le compose racine. Ansible déchiffre le Vault
+(`ANSIBLE_VAULT_PASSWORD` côté GitHub), écrit `devops/.env.prod`, puis
+lance `docker-compose.prod.yml`.
 
 ---
 
 ## Golden path (backend)
 
-Le **golden path** est le seul chemin recommandé pour un nouveau
-développeur : une branche, un fichier CI, des variables à activer.
+Chemin recommandé : une branche, un pipeline, des interrupteurs.
 
-Fichier : [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml)
-
-### Variables à activer
-
-Dans le workflow (bloc `env`) ou via
-**Settings → Secrets and variables → Actions → Variables** :
-
-| Variable | Défaut | Effet |
-|----------|--------|--------|
-| `ENABLE_STAGING_TESTS` | `true` | Autorise le job de tests |
-| `ENABLE_PRODUCTION_RELEASE` | `true` | Autorise build + release |
-
-On peut aussi lancer le workflow à la main
-(**Actions → CI/CD Pipeline → Run workflow**) et cocher :
-
-- `activer_tests_staging`
-- `activer_release_production`
-
-### Chemin 1 — tests sur `Stagging`
+- Pipeline : [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml)
+- Interrupteurs : [`golden-path.env`](golden-path.env) **à la racine**
 
 ```bash
-git checkout Stagging
-git pull
-git checkout -b feature/ma-tache
-# ... commits ...
-git checkout Stagging
-git merge feature/ma-tache
+ENABLE_STAGING_TESTS=true
+ENABLE_PRODUCTION_RELEASE=true
+ENABLE_SEMANTIC_RELEASE=true
+```
+
+Le premier job CI lit ce fichier et active ou saute les jobs.
+
+### Chemin 1 — `Stagging`
+
+```bash
 git push origin Stagging
 ```
 
-Le job **Tests (golden path Stagging)** démarre :
+1. Tests pytest + couverture
+2. Si `ENABLE_SEMANTIC_RELEASE=true` : tag `vX.Y.Z-rc.N` + artefact
+   Actions `release-version`
 
-1. PostgreSQL de service
-2. installation des dépendances
-3. `pytest tests/test_api.py` + couverture
-4. artefacts HTML / XML dans l'onglet Actions
+Build images et Deploy restent **ignorés** sur `Stagging`.
 
-Mettre `ENABLE_STAGING_TESTS=false` (variable dépôt) désactive ce chemin.
-
-### Chemin 2 — release sur `Main` (validation manuelle)
-
-Quand les tests `Stagging` sont verts :
+### Chemin 2 — `Main` (validation manuelle)
 
 ```bash
 git checkout Main
@@ -86,23 +101,15 @@ git merge Stagging
 git push origin Main
 ```
 
-1. Job **Build images** : construction et push
-   `ghcr.io/<org>/<repo>/api` et `.../frontend` (tag SHA + `latest`).
-2. Job **Release production** : attaché à l'environnement GitHub
-   `production`. Tant qu'un reviewer n'a pas approuvé, le déploiement
-   Ansible n'est **pas** lancé.
+1. **Build images** récupère l'artefact `release-version` du dernier run
+   `Stagging` et tague `api:X.Y.Z` / `frontend:X.Y.Z`
+2. **Release production** attend l'approbation de l'environnement
+   GitHub `production`, puis Ansible déploie
 
-Configurer une fois :
-
-1. GitHub → **Settings → Environments → New environment**
-   - `staging` (sans reviewer)
-   - `production` → activer **Required reviewers**
-2. Secrets : `SSH_PRIVATE_KEY`, `PROD_HOST`, `ANSIBLE_VAULT_PASSWORD`
-
-Mettre `ENABLE_PRODUCTION_RELEASE=false` désactive ce chemin.
+Secrets GitHub : `SSH_PRIVATE_KEY`, `PROD_HOST`, `ANSIBLE_VAULT_PASSWORD`.
 
 ```
-feature/*  →  Stagging (tests auto)  →  Main (build)  →  Review  →  Prod
+feature/* → Stagging (tests + version) → Main (build via artefact) → Review → Prod
 ```
 
 ---
@@ -119,26 +126,22 @@ Responsable de tout ce qui tourne derrière `/api` :
 - connexion PostgreSQL (`backend/database.py`)
 - tests dans `tests/test_api.py`
 - `backend/requirements.txt` et `backend/Dockerfile`
-- **gardien du golden path CI** : un push `Stagging` doit rester vert
-  avant toute fusion vers `Main`
+- gardien du golden path : `Stagging` vert avant fusion vers `Main`
 
-Documentation détaillée : [backend/README.md](backend/README.md)
+Documentation : [backend/README.md](backend/README.md)
 
 ### Développeur frontend
 
-Responsable de l'interface utilisateur :
+Responsable de l'interface :
 
-- `frontend/index.html` (formulaire employé, appels `fetch`)
-- `frontend/style.css`
-- `frontend/nginx.conf` (fichiers statiques + proxy `/api/` → API)
-- `frontend/dockerfile` (image Nginx)
+- `frontend/index.html`, `frontend/style.css`
+- `frontend/nginx.conf` (proxy `/api/` → backend)
+- `frontend/dockerfile`
 
-Il ne modifie pas le modèle ML ni la base. Il consomme les contrats
-`GET /colonnes`, `POST /predict`, `POST /sauvegarder`, `GET /resultats`.
-En local via Compose, Nginx expose le front sur le port 8080 et relaie
-`/api` vers le service `api`.
+Il consomme `GET /colonnes`, `POST /predict`, `POST /sauvegarder`,
+`GET /resultats`. Il ne touche ni au modèle ML ni au Vault.
 
-Documentation détaillée : [frontend/README.md](frontend/README.md)
+Documentation : [frontend/README.md](frontend/README.md)
 
 ---
 
