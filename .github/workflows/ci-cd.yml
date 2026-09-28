@@ -1,3 +1,29 @@
+# =============================================================================
+# GOLDEN PATH — pipeline CI/CD backend (+ images frontend)
+# =============================================================================
+#
+# Interrupteurs : .github/golden-path.env
+#   ENABLE_STAGING_TESTS=true|false
+#   ENABLE_PRODUCTION_RELEASE=true|false
+#
+#   1. Tests (Stagging)
+#      ENABLE_STAGING_TESTS=true  →  git push origin Stagging
+#
+#   2. Release (Main) après validation manuelle
+#      ENABLE_PRODUCTION_RELEASE=true  →  git push origin Main
+#      → build GHCR puis job deploy bloqué par l'environnement "production"
+#
+# Variables GitHub à configurer (Settings → Secrets and variables) :
+#   secrets.GITHUB_TOKEN          — fourni automatiquement
+#   secrets.SSH_PRIVATE_KEY       — clé SSH du serveur de prod
+#   secrets.PROD_HOST             — IP / hostname du serveur
+#   secrets.ANSIBLE_VAULT_PASSWORD
+#
+# Environnements GitHub à créer (Settings → Environments) :
+#   - staging     : pas de reviewer (tests automatiques)
+#   - production  : cocher "Required reviewers" (validation manuelle)
+# =============================================================================
+
 name: CI/CD Pipeline
 
 on:
@@ -5,20 +31,68 @@ on:
     branches:
       - Stagging
       - Main
+  # Permet à un développeur de lancer le golden path à la main
+  # (Actions → CI/CD Pipeline → Run workflow)
+  workflow_dispatch:
+    inputs:
+      activer_tests_staging:
+        description: "Activer les tests (chemin Stagging)"
+        type: boolean
+        default: true
+      activer_release_production:
+        description: "Activer la release (chemin Main, validation manuelle)"
+        type: boolean
+        default: false
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME_API: ${{ github.repository }}/api
-  IMAGE_NAME_FRONTEND: ${{ github.repository }}/frontend
 
 jobs:
 
-  # ============================================================
-  # TESTS - STAGGING
-  # ============================================================
-  test:
-    if: github.ref == 'refs/heads/Stagging'
+  # ---------------------------------------------------------------------------
+  # Lit .github/golden-path.env (le fichier où on change true/false)
+  # ---------------------------------------------------------------------------
+  flags:
+    name: Lire les interrupteurs golden path
     runs-on: ubuntu-latest
+    outputs:
+      enable_staging_tests: ${{ steps.read.outputs.enable_staging_tests }}
+      enable_production_release: ${{ steps.read.outputs.enable_production_release }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Lire .github/golden-path.env
+        id: read
+        run: |
+          echo "=== Contenu de .github/golden-path.env ==="
+          cat .github/golden-path.env
+          set -a
+          # shellcheck disable=SC1091
+          source .github/golden-path.env
+          set +a
+          echo "enable_staging_tests=${ENABLE_STAGING_TESTS:-false}" >> "$GITHUB_OUTPUT"
+          echo "enable_production_release=${ENABLE_PRODUCTION_RELEASE:-false}" >> "$GITHUB_OUTPUT"
+          echo "ENABLE_STAGING_TESTS=${ENABLE_STAGING_TESTS:-false}"
+          echo "ENABLE_PRODUCTION_RELEASE=${ENABLE_PRODUCTION_RELEASE:-false}"
+
+  # ---------------------------------------------------------------------------
+  # Chemin 1 — Stagging : tests automatiques
+  # ---------------------------------------------------------------------------
+  test:
+    name: Tests (golden path Stagging)
+    needs: flags
+    if: >
+      needs.flags.outputs.enable_staging_tests == 'true' &&
+      (
+        (github.event_name == 'push' && github.ref == 'refs/heads/Stagging')
+        ||
+        (github.event_name == 'workflow_dispatch' &&
+         github.event.inputs.activer_tests_staging == 'true')
+      )
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
 
     services:
       postgres:
@@ -72,7 +146,7 @@ jobs:
           python --version
           echo ""
           echo "=== Python path ==="
-          python -c "import sys; print('\n'.join(sys.path))"
+          python -c "import sys; print('\\n'.join(sys.path))"
           echo ""
           echo "=== Import backend ==="
           python -c "import backend; print(backend.__file__)"
@@ -122,7 +196,7 @@ jobs:
           DB_NAME: rh_predictions_db
           PYTHONPATH: .
         run: |
-          echo "## 📊 Rapport de couverture" >> $GITHUB_STEP_SUMMARY
+          echo "## Rapport de couverture" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo '```text' >> $GITHUB_STEP_SUMMARY
           python -m pytest tests/test_api.py \
@@ -155,19 +229,25 @@ jobs:
           path: test-results.xml
           retention-days: 30
 
-
-  # ============================================================
-  # BUILD & PUSH - MAIN
-  # Construit et pousse l'image à chaque push sur Main.
-  # Ne déploie PAS encore : c'est le job "deploy" qui s'en charge,
-  # et lui seul attend une validation manuelle.
-  # ============================================================
+  # ---------------------------------------------------------------------------
+  # Chemin 2 — Main : build + publication des images (avant validation)
+  # ---------------------------------------------------------------------------
   build-and-push:
-    if: github.ref == 'refs/heads/Main'
+    name: Build images (golden path Main)
+    needs: flags
+    if: >
+      needs.flags.outputs.enable_production_release == 'true' &&
+      github.ref == 'refs/heads/Main' &&
+      (
+        github.event_name == 'push'
+        ||
+        (github.event_name == 'workflow_dispatch' &&
+         github.event.inputs.activer_release_production == 'true')
+      )
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write   # nécessaire pour pousser sur ghcr.io
+      packages: write
 
     outputs:
       image_tag: ${{ steps.meta.outputs.image_tag }}
@@ -181,11 +261,15 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}   # fourni automatiquement, pas de secret à créer
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set image tag
         id: meta
-        run: echo "image_tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+        run: |
+          repo=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')
+          echo "image_tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "image_api=${{ env.REGISTRY }}/${repo}/api" >> "$GITHUB_OUTPUT"
+          echo "image_frontend=${{ env.REGISTRY }}/${repo}/frontend" >> "$GITHUB_OUTPUT"
 
       - name: Build and push API
         uses: docker/build-push-action@v6
@@ -193,8 +277,8 @@ jobs:
           context: ./backend
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_API }}:${{ steps.meta.outputs.image_tag }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_API }}:latest
+            ${{ steps.meta.outputs.image_api }}:${{ steps.meta.outputs.image_tag }}
+            ${{ steps.meta.outputs.image_api }}:latest
 
       - name: Build and push frontend
         uses: docker/build-push-action@v6
@@ -202,26 +286,33 @@ jobs:
           context: ./frontend
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_FRONTEND }}:${{ steps.meta.outputs.image_tag }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_FRONTEND }}:latest
+            ${{ steps.meta.outputs.image_frontend }}:${{ steps.meta.outputs.image_tag }}
+            ${{ steps.meta.outputs.image_frontend }}:latest
 
-
-  # ============================================================
-  # DEPLOY - MAIN (validation manuelle obligatoire)
-  # Le job se met en PAUSE ici et affiche un bouton "Review deployments"
-  # tant que l'environment "production" n'est pas approuvé.
-  # Cf. Settings > Environments > production > Required reviewers
-  # ============================================================
+  # ---------------------------------------------------------------------------
+  # Chemin 2 (suite) — release production après validation manuelle
+  # L'environnement GitHub "production" doit avoir "Required reviewers".
+  # Tant que personne n'approuve, le job reste en attente (Review).
+  # ---------------------------------------------------------------------------
   deploy:
-    if: github.ref == 'refs/heads/Main'
-    needs: build-and-push
+    name: Release production (validation manuelle)
+    needs: [flags, build-and-push]
+    if: >
+      needs.flags.outputs.enable_production_release == 'true' &&
+      github.ref == 'refs/heads/Main' &&
+      (
+        github.event_name == 'push'
+        ||
+        (github.event_name == 'workflow_dispatch' &&
+         github.event.inputs.activer_release_production == 'true')
+      )
     runs-on: ubuntu-latest
     environment:
       name: production
       url: https://predictions.1dream.art
     permissions:
       contents: read
-      packages: read   # le GITHUB_TOKEN doit pouvoir lire le package pour le pull côté serveur
+      packages: read
 
     steps:
       - name: Checkout code
