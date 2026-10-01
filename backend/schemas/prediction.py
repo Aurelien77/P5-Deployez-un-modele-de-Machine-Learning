@@ -9,6 +9,7 @@ class PredictionRequest(BaseModel):
     seuil: float = 0.37
     prenom: Optional[str] = "John"
     nom: Optional[str] = "Doe"
+    employe_id: Optional[int] = None  
 
 
 class SauvegardeRequest(BaseModel):
@@ -20,3 +21,4 @@ class SauvegardeRequest(BaseModel):
     libelle_prediction: str
     seuil_applique: float
     features: Dict[str, Any] = {}
+    employe_id: Optional[int] = None     
