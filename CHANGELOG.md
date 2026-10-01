@@ -1,3 +1,10 @@
+# [1.0.0-rc.2](https://github.com/Aurelien77/P5-Deployez-un-modele-de-Machine-Learning/compare/v1.0.0-rc.1...v1.0.0-rc.2) (2026-10-01)
+
+
+### Features
+
+* ajout de la partie ancien employé, depuis y.csv ([b583915](https://github.com/Aurelien77/P5-Deployez-un-modele-de-Machine-Learning/commit/b583915c284faaa85d6435ec4fc5f4aa5032fa12))
+
 # 1.0.0-rc.1 (2026-09-28)
 
 

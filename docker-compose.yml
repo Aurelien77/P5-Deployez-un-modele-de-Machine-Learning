@@ -33,7 +33,7 @@ services:
       DATA_DIR: /app/Data
     volumes:
       - ./Data:/app/Data:ro
-    command: ["python", "script/create_db.py.py"]
+    command: ["python", "script/create_db.py"]
 
   api:
     build:

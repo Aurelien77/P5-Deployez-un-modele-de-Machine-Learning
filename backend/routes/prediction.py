@@ -25,6 +25,7 @@ def predict(data: PredictionRequest):
             libelle_prediction=libelle,
             seuil_applique=sortie["seuil_utilise"],
             features=data.features,
+            employe_id=data.employe_id,
         )
     )
     sortie["enregistrement"] = enregistrement
