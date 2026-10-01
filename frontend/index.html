@@ -19,12 +19,23 @@
                     <input type="text" id="recherche-annuaire" placeholder="ex. 85" style="flex:1;">
                     <button type="button" id="btn-charger-id" style="width:auto; padding:8px 14px;">Charger</button>
                 </div>
-
+   <span id="alerte-employe-quitte" style="display:none; color:#c0392b; font-weight:bold; margin-top:8px;">
+                ⚠️ Cet employé a déjà quitté l'entreprise.
+            </span>
             </div>
         </div>
 
     </div>
-
+<div class="config-section">
+    <div class="config-row">
+        <div style="flex: 1;">
+            <label for="select-quittes">Employés ayant quitté (chargement rapide) :</label>
+            <select id="select-quittes" style="width:100%;">
+                <option value="">— Choisir un id —</option>
+            </select>
+        </div>
+    </div>
+</div>
     <div class="calc-box">
         <h2>Variables sources (pour calculer les 2 features manquantes)</h2>
         <div class="grid">
@@ -118,6 +129,37 @@
 <script>
     // Préfixe de l'API — vide en local si tu sers l'API directement sur le même
     // port/hôte, ou "/api" si nginx route /api/* vers le backend (cf. prod).
+    async function chargerListeQuittes() {
+    const select = document.getElementById("select-quittes");
+    try {
+        const response = await fetch(`${API_BASE}/annuaire?limit=2000`);
+        const data = await response.json();
+        const quittes = (data.personnes || []).filter(p => p.a_quitte_l_entreprise === "Oui");
+
+        quittes.forEach(p => {
+            const option = document.createElement("option");
+            option.value = p.id;
+            option.innerText = p.libelle;
+            select.appendChild(option);
+        });
+
+        if (!quittes.length) {
+            const option = document.createElement("option");
+            option.disabled = true;
+            option.innerText = "Aucun employé ayant quitté trouvé";
+            select.appendChild(option);
+        }
+    } catch (e) {
+        console.error("Erreur chargement liste 'quittés'", e);
+    }
+}
+
+document.getElementById("select-quittes").addEventListener("change", function () {
+    if (this.value) {
+        document.getElementById("recherche-annuaire").value = this.value;
+        chargerFicheParId(this.value);
+    }
+});
     const API_BASE = "/api";
 
     const COLONNES_MODELE = [
@@ -285,6 +327,7 @@
     window.addEventListener("DOMContentLoaded", () => {
         chargerColonnes();
         chargerResultats();
+        chargerListeQuittes(); 
     });
 
     let employeIdCourant = null;
@@ -296,33 +339,45 @@
         el.value = valeur;
     }
 
-    async function chargerFicheParId(identifiant) {
-        const idNum = parseInt(identifiant, 10);
-        if (!idNum) {
-            employeIdCourant = null;
-            return;
-        }
-        employeIdCourant = idNum;
-        try {
-            const response = await fetch(`${API_BASE}/employes/${idNum}`);
-            const data = await response.json();
-            if (!response.ok) throw new Error(JSON.stringify(data.detail || data));
-            const fiche = data.employe || {};
-            Object.keys(fiche).forEach((cle) => appliquerValeur(cle, fiche[cle]));
-            
-            if (typeof recalculerFeaturesDerivees === "function") {
-                recalculerFeaturesDerivees();
-            }
-        } catch (error) {
-            alert("Aucun employé pour l'id " + identifiant + ".");
-            console.error(error);
-        }
-    }
+async function chargerFicheParId(identifiant) {
+    const idNum = parseInt(identifiant, 10);
+    const alerte = document.getElementById("alerte-employe-quitte");
 
+    if (!idNum) {
+        employeIdCourant = null;
+        alerte.style.display = "none";
+        return;
+    }
+    employeIdCourant = idNum;
+    try {
+        const response = await fetch(`${API_BASE}/employes/${idNum}`);
+        const data = await response.json();
+        if (!response.ok) throw new Error(JSON.stringify(data.detail || data));
+        const fiche = data.employe || {};
+        Object.keys(fiche).forEach((cle) => appliquerValeur(cle, fiche[cle]));
+
+        if (fiche.a_quitte_l_entreprise === "Oui") {
+            alerte.style.display = "inline-block";
+        } else {
+            alerte.style.display = "none";
+        }
+
+        if (typeof recalculerFeaturesDerivees === "function") {
+            recalculerFeaturesDerivees();
+        }
+    } catch (error) {
+        alerte.style.display = "none";
+        alert("Aucun employé pour l'id " + identifiant + ".");
+        console.error(error);
+    }
+}
 document.getElementById("recherche-annuaire").addEventListener("input", function () {
     clearTimeout(window._annuaireTimer);
     const terme = this.value.trim();
-    if (!terme) employeIdCourant = null;
+    if (!terme) {
+        employeIdCourant = null;
+        document.getElementById("alerte-employe-quitte").style.display = "none";  // ← AJOUT
+    }
     window._annuaireTimer = setTimeout(() => {
         if (/^\d+$/.test(terme)) chargerFicheParId(terme);
     }, 250);
