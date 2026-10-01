@@ -174,7 +174,7 @@ jobs:
           DB_NAME: rh_predictions_db
           PYTHONPATH: .
         run: |
-          pytest tests/test_api.py \
+          pytest tests \
             --cov=backend \
             --cov-report=term-missing \
             --cov-report=html:htmlcov \
@@ -203,7 +203,7 @@ jobs:
           echo "## Rapport de couverture" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo '```text' >> $GITHUB_STEP_SUMMARY
-          python -m pytest tests/test_api.py \
+          python -m pytest tests \
             --cov=backend \
             --cov-report=term-missing \
             --no-cov-on-fail 2>&1 | tail -n 30 >> $GITHUB_STEP_SUMMARY

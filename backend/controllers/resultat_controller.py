@@ -12,22 +12,23 @@ from schemas.prediction import SauvegardeRequest
 def sauvegarder_prediction(data: SauvegardeRequest) -> dict:
     db = SessionLocal()
     try:
-        details = dict(data.features or {})
-        if getattr(data, "employe_id", None) is not None:
-            details["employe_id"] = data.employe_id
-        champs = {
-            "prenom": data.prenom,
-            "nom": data.nom,
-            "modele_utilise": data.modele_utilise,
-            "probabilite_de_quitter": data.probabilite_de_quitter,
-            "prediction": data.prediction,
-            "libelle_prediction": data.libelle_prediction,
-            "seuil_applique": data.seuil_applique,
-            "details": json.dumps(details, ensure_ascii=False),
-        }
-        if hasattr(ResultatDB, "employe_id"):
-            champs["employe_id"] = getattr(data, "employe_id", None)
-        nouveau_resultat = ResultatDB(**champs)
+        employe_id = getattr(data, "employe_id", None)
+
+        # On ne duplique les features en JSON QUE s'il n'y a pas d'employe_id
+        # (saisie manuelle) — sinon elles restent consultables via la FK.
+        details_json = None if employe_id else json.dumps(data.features or {}, ensure_ascii=False)
+
+        nouveau_resultat = ResultatDB(
+            prenom=data.prenom,
+            nom=data.nom,
+            modele_utilise=data.modele_utilise,
+            probabilite_de_quitter=data.probabilite_de_quitter,
+            prediction=data.prediction,
+            libelle_prediction=data.libelle_prediction,
+            seuil_applique=data.seuil_applique,
+            employe_id=employe_id,
+            details=details_json,
+        )
         db.add(nouveau_resultat)
         db.commit()
         db.refresh(nouveau_resultat)
@@ -44,16 +45,7 @@ def sauvegarder_prediction(data: SauvegardeRequest) -> dict:
         db.close()
 
 
-def lister_annuaire(q: Optional[str] = None, limit: int = 2000) -> dict:
-    """Tous les id de employes_features (jointure cible)."""
-    return lister_annuaire_par_id(q=q, limit=limit)
-
-
-def lister_resultats(
-    limit: int = 20,
-    prenom: Optional[str] = None,
-    nom: Optional[str] = None,
-) -> dict:
+def lister_resultats(limit: int = 20, prenom: Optional[str] = None, nom: Optional[str] = None) -> dict:
     db = SessionLocal()
     try:
         requete = db.query(ResultatDB)
@@ -61,19 +53,10 @@ def lister_resultats(
             requete = requete.filter(ResultatDB.prenom.ilike(prenom.strip()))
         if nom:
             requete = requete.filter(ResultatDB.nom.ilike(nom.strip()))
-        lignes = (
-            requete.order_by(ResultatDB.id.desc())
-            .limit(max(1, min(limit, 100)))
-            .all()
-        )
+        lignes = requete.order_by(ResultatDB.id.desc()).limit(max(1, min(limit, 100))).all()
+
         sortie = []
         for row in lignes:
-            details = {}
-            if row.details:
-                try:
-                    details = json.loads(row.details)
-                except json.JSONDecodeError:
-                    details = {"brut": row.details}
             sortie.append({
                 "id": row.id,
                 "prenom": row.prenom,
@@ -83,13 +66,58 @@ def lister_resultats(
                 "prediction": row.prediction,
                 "libelle_prediction": row.libelle_prediction,
                 "seuil_applique": row.seuil_applique,
-                "details": details,
+                "employe_id": row.employe_id,  # ← AJOUT : le lien, visible direct dans la liste
             })
         return {"nb": len(sortie), "resultats": sortie}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         db.close()
+
+
+def obtenir_detail_resultat(resultat_id: int) -> dict:
+    """Renvoie un résultat + ses features, récupérées :
+    - via jointure sur employes_features si employe_id est renseigné
+    - via le JSON de secours `details` sinon (saisie manuelle)
+    """
+    db = SessionLocal()
+    try:
+        row = db.query(ResultatDB).filter(ResultatDB.id == resultat_id).first()
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"Résultat #{resultat_id} introuvable.")
+
+        if row.employe_id is not None:
+            with engine.connect() as conn:
+                ligne = conn.execute(
+                    text("SELECT * FROM employes_features WHERE id = :id"),
+                    {"id": row.employe_id},
+                ).mappings().first()
+            features = dict(ligne) if ligne else {}
+            features.pop("id", None)
+            source = "employes_features"
+        else:
+            features = json.loads(row.details) if row.details else {}
+            source = "details_json"
+
+        return {
+            "id": row.id,
+            "prenom": row.prenom,
+            "nom": row.nom,
+            "modele_utilise": row.modele_utilise,
+            "probabilite_de_quitter": row.probabilite_de_quitter,
+            "prediction": row.prediction,
+            "libelle_prediction": row.libelle_prediction,
+            "seuil_applique": row.seuil_applique,
+            "employe_id": row.employe_id,
+            "features": features,
+            "source_features": source,
+        }
+    finally:
+        db.close()
+
+
+def lister_annuaire(q: Optional[str] = None, limit: int = 2000) -> dict:
+    return lister_annuaire_par_id(q=q, limit=limit)
 
 
 def lister_annuaire_par_id(q: Optional[str] = None, limit: int = 40) -> dict:

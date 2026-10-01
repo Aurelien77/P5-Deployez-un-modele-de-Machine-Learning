@@ -17,6 +17,32 @@ DATABASE_URL = f"postgresql+psycopg://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+def assurer_colonne_employe_id():
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE resultats ADD COLUMN IF NOT EXISTS employe_id INTEGER"))
+            conn.commit()
+    except Exception as exc:
+        print(f"Note migration colonne employe_id : {exc}")
+
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_constraint WHERE conname = 'fk_resultats_employe_id'
+                    ) THEN
+                        ALTER TABLE resultats
+                        ADD CONSTRAINT fk_resultats_employe_id
+                        FOREIGN KEY (employe_id) REFERENCES employes_features(id)
+                        ON DELETE SET NULL;
+                    END IF;
+                END $$;
+            """))
+            conn.commit()
+    except Exception as exc:
+        print(f"Note migration contrainte FK employe_id : {exc}")
 
 
 def attendre_et_creer_tables(tentatives: int = 10, delai: int = 3):
@@ -52,3 +78,4 @@ def get_db():
 def initialiser_base():
     attendre_et_creer_tables()
     assurer_colonne_details()
+    assurer_colonne_employe_id() 
