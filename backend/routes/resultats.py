@@ -21,6 +21,9 @@ def lister_resultats(
 ):
     return resultat_controller.lister_resultats(limit, prenom=prenom, nom=nom)
 
+@router.get("/resultats/{resultat_id}")
+def detail_resultat(resultat_id: int):
+    return resultat_controller.obtenir_detail_resultat(resultat_id)
 
 @router.get("/annuaire")
 def lister_annuaire(q: Optional[str] = None, limit: int = 2000):

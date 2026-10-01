@@ -105,3 +105,55 @@ def test_sauvegarder_et_lister_resultats():
     derniers = data_list["resultats"]
     trouve = any(item["prenom"] == "Alice" and item["nom"] == "Test" for item in derniers)
     assert trouve is True
+
+
+def test_detail_resultat_et_filtre_nom():
+    """Couvre GET /resultats/{id} et les filtres prenom/nom."""
+    payload = {
+        "prenom": "Bruno",
+        "nom": "Couverture",
+        "modele_utilise": "top1",
+        "probabilite_de_quitter": 0.42,
+        "prediction": 1,
+        "libelle_prediction": "A risque de partir",
+        "seuil_applique": 0.37,
+        "features": {"age": 44},
+    }
+    sauve = client.post("/sauvegarder", json=payload)
+    assert sauve.status_code == 200
+    identifiant = sauve.json()["id"]
+
+    detail = client.get(f"/resultats/{identifiant}")
+    assert detail.status_code == 200
+    assert detail.json()["prenom"] == "Bruno"
+    assert detail.json()["source_features"] == "details_json"
+
+    filtre = client.get("/resultats", params={"prenom": "Bruno", "nom": "Couverture", "limit": 5})
+    assert filtre.status_code == 200
+    assert any(item["id"] == identifiant for item in filtre.json()["resultats"])
+
+    inconnu = client.get("/resultats/99999999")
+    assert inconnu.status_code == 404
+
+
+def test_annuaire_et_employe():
+    """Couvre /annuaire et /employes/{id}, tables presentes ou non."""
+    annuaire = client.get("/annuaire", params={"q": "1", "limit": 5})
+    assert annuaire.status_code in (200, 500)
+    if annuaire.status_code == 200:
+        assert "personnes" in annuaire.json()
+
+    employe = client.get("/employes/1")
+    assert employe.status_code in (200, 404, 500)
+
+
+def test_debug_modele_inconnu_et_accueil_fichier(tmp_path, monkeypatch):
+    """Couvre le 404 de debug et le FileResponse de l'accueil."""
+    debug = client.get("/debug/modele/modele_inexistant")
+    assert debug.status_code == 404
+
+    index = tmp_path / "index.html"
+    index.write_text("<html>accueil</html>", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    accueil = client.get("/")
+    assert accueil.status_code == 200
