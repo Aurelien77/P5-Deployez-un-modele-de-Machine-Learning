@@ -14,4 +14,5 @@ class ResultatDB(Base):
     prediction = Column(Integer)
     libelle_prediction = Column(String)
     seuil_applique = Column(Float)
-    details = Column(String)
+    employe_id = Column(Integer, nullable=True) 
+    details = Column(String, nullable=True)
