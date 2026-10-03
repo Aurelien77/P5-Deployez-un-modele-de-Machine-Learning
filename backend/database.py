@@ -67,6 +67,36 @@ def assurer_colonne_details():
         print(f"Note migration colonne details : {exc}")
 
 
+
+def assurer_colonne_id_user():
+    """Lie resultats aux comptes : colonne id_user + clé étrangère vers users."""
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE resultats ADD COLUMN IF NOT EXISTS id_user INTEGER"))
+            conn.commit()
+    except Exception as exc:
+        print(f"Note migration colonne id_user : {exc}")
+
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_constraint WHERE conname = 'fk_resultats_id_user'
+                    ) THEN
+                        ALTER TABLE resultats
+                        ADD CONSTRAINT fk_resultats_id_user
+                        FOREIGN KEY (id_user) REFERENCES users(id)
+                        ON DELETE CASCADE;
+                    END IF;
+                END $$;
+            """))
+            conn.commit()
+    except Exception as exc:
+        print(f"Note migration contrainte FK id_user : {exc}")
+
+
 def get_db():
     db = SessionLocal()
     try:
@@ -78,4 +108,5 @@ def get_db():
 def initialiser_base():
     attendre_et_creer_tables()
     assurer_colonne_details()
-    assurer_colonne_employe_id() 
+    assurer_colonne_employe_id()
+    assurer_colonne_id_user()

@@ -584,18 +584,19 @@ def test_prediction_reussie_et_routes_restantes(tmp_path, monkeypatch):
         modele_controller.loaded_models.clear()
         modele_controller.loaded_models.update(saved)
 
-    monkeypatch.setattr(routes_resultats.resultat_controller, "sauvegarder_prediction", lambda data: {"id": 1})
-    monkeypatch.setattr(routes_resultats.resultat_controller, "lister_resultats", lambda limit, prenom=None, nom=None: {"nb": 0})
+    monkeypatch.setattr(routes_resultats.resultat_controller, "sauvegarder_prediction", lambda data, id_user=None: {"id": 1})
+    monkeypatch.setattr(routes_resultats.resultat_controller, "lister_resultats", lambda limit, prenom=None, nom=None, id_user=None: {"nb": 0})
     monkeypatch.setattr(routes_resultats.resultat_controller, "lister_annuaire", lambda q=None, limit=2000: {"nb": 0})
     from schemas.prediction import SauvegardeRequest as Demande
+    utilisateur = {"id": 1, "username": "couverture"}
     assert routes_resultats.sauvegarder_prediction(Demande(
         modele_utilise="top1",
         probabilite_de_quitter=0.1,
         prediction=0,
         libelle_prediction="Reste",
         seuil_applique=0.37,
-    ))["id"] == 1
-    assert routes_resultats.lister_resultats(5, prenom="A", nom="B")["nb"] == 0
+    ), utilisateur=utilisateur)["id"] == 1
+    assert routes_resultats.lister_resultats(5, prenom="A", nom="B", utilisateur=utilisateur)["nb"] == 0
     assert routes_resultats.lister_annuaire("1", 2)["nb"] == 0
 
     from routes import debug as routes_debug
@@ -619,7 +620,7 @@ def test_prediction_reussie_et_routes_restantes(tmp_path, monkeypatch):
 
     inclus = []
     register_routes(SimpleNamespace(include_router=inclus.append))
-    assert len(inclus) == 4
+    assert len(inclus) == 6
 
     from routes import prediction as routes_prediction
     monkeypatch.setattr(
@@ -635,28 +636,34 @@ def test_prediction_reussie_et_routes_restantes(tmp_path, monkeypatch):
     monkeypatch.setattr(
         routes_prediction.resultat_controller,
         "sauvegarder_prediction",
-        lambda data: {"id": 3, "employe": data.prenom},
+        lambda data, id_user=None: {"id": 3, "employe": data.prenom},
     )
     from schemas.prediction import PredictionRequest
-    sortie = routes_prediction.predict(PredictionRequest(modele="top1", features={"age": 1}, prenom="", nom=None))
+    sortie = routes_prediction.predict(
+        PredictionRequest(modele="top1", features={"age": 1}, prenom="", nom=None),
+        utilisateur={"id": 7, "username": "couverture"},
+    )
     assert sortie["enregistrement"]["id"] == 3
     assert sortie["enregistrement"]["employe"] == "John"
 
 
 def test_migrations_base(monkeypatch):
-    from database import assurer_colonne_details, assurer_colonne_employe_id, initialiser_base
+    from database import assurer_colonne_details, assurer_colonne_employe_id, assurer_colonne_id_user, initialiser_base
 
     monkeypatch.setattr("database.engine", _Engine())
     assurer_colonne_details()
     assurer_colonne_employe_id()
+    assurer_colonne_id_user()
 
     monkeypatch.setattr("database.engine", _Engine(fail=True))
     assurer_colonne_details()
     assurer_colonne_employe_id()
+    assurer_colonne_id_user()
 
     monkeypatch.setattr("database.Base.metadata.create_all", lambda bind: None)
     attendre_et_creer_tables(tentatives=1, delai=0)
     monkeypatch.setattr("database.attendre_et_creer_tables", lambda: None)
     monkeypatch.setattr("database.assurer_colonne_details", lambda: None)
     monkeypatch.setattr("database.assurer_colonne_employe_id", lambda: None)
+    monkeypatch.setattr("database.assurer_colonne_id_user", lambda: None)
     initialiser_base()
