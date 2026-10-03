@@ -5,6 +5,18 @@ from backend.app import app, COLONNES_MODELE
 
 client = TestClient(app)
 
+
+def _auth_headers(suffix: str = "api"):
+    """Crée un compte jetable et renvoie le header Bearer (jeton 12 h)."""
+    import uuid
+    username = f"{suffix}_{uuid.uuid4().hex[:10]}"
+    password = "secret123"
+    reg = client.post("/auth/register", json={"username": username, "password": password})
+    assert reg.status_code == 201, reg.text
+    token = reg.json()["access_token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
 def test_read_root():
     """Test de l'endpoint racine (charge l'interface HTML ou renvoie 404 si absente)."""
     response = client.get("/")
@@ -58,7 +70,7 @@ def test_predict_nominal():
             "heure_supplementaires": "Non"
         }
     }
-    response = client.post("/predict", json=payload)
+    response = client.post("/predict", json=payload, headers=_auth_headers("pred"))
     assert response.status_code == 200
     data = response.json()
     
@@ -73,7 +85,7 @@ def test_predict_modele_invalide():
         "modele": "modele_fantome",
         "features": {"age": 30}
     }
-    response = client.post("/predict", json=payload)
+    response = client.post("/predict", json=payload, headers=_auth_headers("fantome"))
     assert response.status_code == 404
 
 def test_sauvegarder_et_lister_resultats():
@@ -89,14 +101,16 @@ def test_sauvegarder_et_lister_resultats():
         "features": {"age": 28, "revenu_mensuel": 3000}
     }
     
+    headers = _auth_headers("alice")
     # Sauvegarde
-    res_save = client.post("/sauvegarder", json=payload_sauvegarde)
+    res_save = client.post("/sauvegarder", json=payload_sauvegarde, headers=headers)
     assert res_save.status_code == 200
     data_save = res_save.json()
     assert "id" in data_save
+    assert data_save["id_user"]
     
     # Relecture de l'historique
-    res_list = client.get("/resultats?limit=5")
+    res_list = client.get("/resultats?limit=5", headers=headers)
     assert res_list.status_code == 200
     data_list = res_list.json()
     assert data_list["nb"] > 0
@@ -119,20 +133,21 @@ def test_detail_resultat_et_filtre_nom():
         "seuil_applique": 0.37,
         "features": {"age": 44},
     }
-    sauve = client.post("/sauvegarder", json=payload)
+    headers = _auth_headers("bruno")
+    sauve = client.post("/sauvegarder", json=payload, headers=headers)
     assert sauve.status_code == 200
     identifiant = sauve.json()["id"]
 
-    detail = client.get(f"/resultats/{identifiant}")
+    detail = client.get(f"/resultats/{identifiant}", headers=headers)
     assert detail.status_code == 200
     assert detail.json()["prenom"] == "Bruno"
     assert detail.json()["source_features"] == "details_json"
 
-    filtre = client.get("/resultats", params={"prenom": "Bruno", "nom": "Couverture", "limit": 5})
+    filtre = client.get("/resultats", params={"prenom": "Bruno", "nom": "Couverture", "limit": 5}, headers=headers)
     assert filtre.status_code == 200
     assert any(item["id"] == identifiant for item in filtre.json()["resultats"])
 
-    inconnu = client.get("/resultats/99999999")
+    inconnu = client.get("/resultats/99999999", headers=headers)
     assert inconnu.status_code == 404
 
 
@@ -157,3 +172,33 @@ def test_debug_modele_inconnu_et_accueil_fichier(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     accueil = client.get("/")
     assert accueil.status_code == 200
+
+
+def test_auth_compte():
+    """Création, connexion, rejet d'un mot de passe faux, suppression."""
+    import uuid
+    username = f"auth_{uuid.uuid4().hex[:10]}"
+    password = "secret123"
+    cree = client.post("/auth/register", json={"username": username, "password": password})
+    assert cree.status_code == 201
+    assert cree.json()["expires_in"] == 12 * 60 * 60
+    token = cree.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    doublon = client.post("/auth/register", json={"username": username, "password": password})
+    assert doublon.status_code == 409
+
+    mauvais = client.post("/auth/login", json={"username": username, "password": "non"})
+    assert mauvais.status_code == 401
+
+    moi = client.get("/auth/moi", headers=headers)
+    assert moi.status_code == 200
+    assert moi.json()["username"] == username
+
+    sans = client.get("/resultats")
+    assert sans.status_code == 401
+
+    suppr = client.delete("/auth/compte", headers=headers)
+    assert suppr.status_code == 200
+    encore = client.get("/auth/moi", headers=headers)
+    assert encore.status_code == 401

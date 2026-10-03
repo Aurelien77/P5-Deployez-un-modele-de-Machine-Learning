@@ -164,3 +164,118 @@ th {
     margin-left: 15px;
     font-weight: bold;
 }
+
+.auth-actions {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.auth-actions button {
+    width: auto;
+    margin-top: 0;
+    padding: 10px 16px;
+}
+
+.btn-secondaire {
+    background-color: #7f8c8d;
+}
+
+.btn-secondaire:hover {
+    background-color: #636e72;
+}
+
+.btn-danger {
+    background-color: #c0392b;
+}
+
+.btn-danger:hover {
+    background-color: #a93226;
+}
+
+#app-connectee {
+    display: none;
+}
+
+.mode-switch {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 8px 0 18px;
+}
+
+.mode-label {
+    color: #95a5a6;
+    font-weight: bold;
+    cursor: pointer;
+    font-size: 14px;
+}
+
+.mode-label.actif {
+    color: #2c3e50;
+}
+
+.slider {
+    width: 52px;
+    height: 28px;
+    border-radius: 14px;
+    background: #bdc3c7;
+    position: relative;
+    padding: 0;
+    margin: 0;
+    flex: 0 0 52px;
+}
+
+.slider::after {
+    content: "";
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: white;
+    transition: transform 0.2s ease;
+}
+
+.mode-switch.inscription .slider {
+    background: #3498db;
+}
+
+.mode-switch.inscription .slider::after {
+    transform: translateX(24px);
+}
+
+.compte-menu {
+    position: relative;
+    display: inline-block;
+}
+
+#btn-compte {
+    width: auto;
+    margin-top: 0;
+    padding: 10px 16px;
+}
+
+.compte-dropdown {
+    display: none;
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    min-width: 220px;
+    background: white;
+    border: 1px solid #d5dde3;
+    border-radius: 6px;
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.12);
+    z-index: 5;
+    padding: 8px;
+}
+
+.compte-dropdown.ouvert {
+    display: block;
+}
+
+.compte-dropdown button {
+    width: 100%;
+    margin-top: 8px;
+}

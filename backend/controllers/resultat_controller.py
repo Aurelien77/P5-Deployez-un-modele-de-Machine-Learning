@@ -9,13 +9,10 @@ from models.resultat import ResultatDB
 from schemas.prediction import SauvegardeRequest
 
 
-def sauvegarder_prediction(data: SauvegardeRequest) -> dict:
+def sauvegarder_prediction(data: SauvegardeRequest, id_user: Optional[int] = None) -> dict:
     db = SessionLocal()
     try:
         employe_id = getattr(data, "employe_id", None)
-
-        # On ne duplique les features en JSON QUE s'il n'y a pas d'employe_id
-        # (saisie manuelle) — sinon elles restent consultables via la FK.
         details_json = None if employe_id else json.dumps(data.features or {}, ensure_ascii=False)
 
         nouveau_resultat = ResultatDB(
@@ -29,6 +26,8 @@ def sauvegarder_prediction(data: SauvegardeRequest) -> dict:
             employe_id=employe_id,
             details=details_json,
         )
+        if id_user is not None and hasattr(ResultatDB, "id_user"):
+            nouveau_resultat.id_user = id_user
         db.add(nouveau_resultat)
         db.commit()
         db.refresh(nouveau_resultat)
@@ -37,6 +36,7 @@ def sauvegarder_prediction(data: SauvegardeRequest) -> dict:
             "message": "Enregistré avec succès en base !",
             "id": nouveau_resultat.id,
             "employe": f"{nouveau_resultat.prenom} {nouveau_resultat.nom}",
+            "id_user": getattr(nouveau_resultat, "id_user", None),
         }
     except Exception as e:
         db.rollback()
@@ -44,11 +44,12 @@ def sauvegarder_prediction(data: SauvegardeRequest) -> dict:
     finally:
         db.close()
 
-
-def lister_resultats(limit: int = 20, prenom: Optional[str] = None, nom: Optional[str] = None) -> dict:
+def lister_resultats(limit: int = 20, prenom: Optional[str] = None, nom: Optional[str] = None, id_user: Optional[int] = None) -> dict:
     db = SessionLocal()
     try:
-        requete = db.query(ResultatDB)
+        if id_user is None:
+            return {"nb": 0, "resultats": []}
+        requete = db.query(ResultatDB).filter(ResultatDB.id_user == id_user)
         if prenom:
             requete = requete.filter(ResultatDB.prenom.ilike(prenom.strip()))
         if nom:
@@ -66,6 +67,7 @@ def lister_resultats(limit: int = 20, prenom: Optional[str] = None, nom: Optiona
                 "prediction": row.prediction,
                 "libelle_prediction": row.libelle_prediction,
                 "seuil_applique": row.seuil_applique,
+                "id_user": row.id_user,
                 "employe_id": row.employe_id,  # ← AJOUT : le lien, visible direct dans la liste
             })
         return {"nb": len(sortie), "resultats": sortie}
@@ -75,7 +77,7 @@ def lister_resultats(limit: int = 20, prenom: Optional[str] = None, nom: Optiona
         db.close()
 
 
-def obtenir_detail_resultat(resultat_id: int) -> dict:
+def obtenir_detail_resultat(resultat_id: int, id_user: Optional[int] = None) -> dict:
     """Renvoie un résultat + ses features, récupérées :
     - via jointure sur employes_features si employe_id est renseigné
     - via le JSON de secours `details` sinon (saisie manuelle)
@@ -83,7 +85,7 @@ def obtenir_detail_resultat(resultat_id: int) -> dict:
     db = SessionLocal()
     try:
         row = db.query(ResultatDB).filter(ResultatDB.id == resultat_id).first()
-        if row is None:
+        if row is None or (id_user is not None and row.id_user != id_user):
             raise HTTPException(status_code=404, detail=f"Résultat #{resultat_id} introuvable.")
 
         if row.employe_id is not None:
@@ -109,6 +111,7 @@ def obtenir_detail_resultat(resultat_id: int) -> dict:
             "libelle_prediction": row.libelle_prediction,
             "seuil_applique": row.seuil_applique,
             "employe_id": row.employe_id,
+            "id_user": row.id_user,
             "features": features,
             "source_features": source,
         }

@@ -11,6 +11,44 @@
 <div class="container">
     <h1>Interface de Prédiction</h1>
 
+    <div class="config-section" id="bloc-auth">
+        <h2 id="auth-titre">Connexion</h2>
+        <p class="hint" id="auth-etat">Connectez-vous pour accéder à l'interface.</p>
+        <div class="mode-switch" id="mode-switch">
+            <span id="label-login" class="mode-label actif">Connexion</span>
+            <button type="button" id="btn-slider" class="slider" aria-label="Basculer entre connexion et création de compte"></button>
+            <span id="label-register" class="mode-label">Créer un compte</span>
+        </div>
+        <div class="grid" id="champs-auth">
+            <div class="form-group">
+                <label for="auth-username">Nom d'utilisateur</label>
+                <input type="text" id="auth-username" autocomplete="username" placeholder="ex. marie">
+            </div>
+            <div class="form-group">
+                <label for="auth-password">Mot de passe</label>
+                <input type="password" id="auth-password" autocomplete="current-password" placeholder="4 caractères minimum">
+            </div>
+        </div>
+        <div class="auth-actions">
+            <button type="button" id="btn-auth-submit">Se connecter</button>
+            <div class="compte-menu" id="compte-menu" style="display:none;">
+                <button type="button" id="btn-compte">Compte</button>
+                <div class="compte-dropdown" id="compte-dropdown">
+                    <button type="button" id="btn-logout">Se déconnecter</button>
+                    <button type="button" id="btn-ouvrir-mdp">Modifier le mot de passe</button>
+                    <form id="form-mdp" class="form-mdp" style="display:none;">
+                        <input type="password" id="ancien-mdp" placeholder="Ancien mot de passe" autocomplete="current-password">
+                        <input type="password" id="nouveau-mdp" placeholder="Nouveau mot de passe" autocomplete="new-password">
+                        <button type="submit" id="btn-changer-mdp">Enregistrer</button>
+                    </form>
+                    <button type="button" id="btn-supprimer-compte" class="btn-danger">Supprimer mon compte</button>
+                </div>
+            </div>
+        </div>
+        <p id="auth-message" class="hint"></p>
+    </div>
+
+    <div id="app-connectee" style="display:none;">
     <div class="config-section">
         <div class="config-row">
             <div style="flex: 1;">
@@ -121,8 +159,9 @@
 
     <div id="historique">
         <h2>Dernières prédictions enregistrées</h2>
-        <p class="hint">Vérification directe de la table PostgreSQL <code>resultats</code>.</p>
+        <p class="hint">Vos prédictions uniquement (liées à votre compte via <code>id_user</code>).</p>
         <div id="liste-resultats">Chargement...</div>
+    </div>
     </div>
 </div>
 
@@ -161,6 +200,163 @@ document.getElementById("select-quittes").addEventListener("change", function ()
     }
 });
     const API_BASE = "/api";
+    const TOKEN_KEY = "rh_access_token";
+    const USER_KEY = "rh_username";
+
+    function tokenCourant() {
+        return localStorage.getItem(TOKEN_KEY) || "";
+    }
+
+    function entetesAuth(extra) {
+        const headers = Object.assign({ "Content-Type": "application/json" }, extra || {});
+        const token = tokenCourant();
+        if (token) headers.Authorization = "Bearer " + token;
+        return headers;
+    }
+
+    function majAuthUi() {
+        const connecte = Boolean(tokenCourant());
+        document.getElementById("compte-menu").style.display = connecte ? "inline-block" : "none";
+        document.getElementById("btn-auth-submit").style.display = connecte ? "none" : "inline-block";
+        if (!connecte) document.getElementById("compte-dropdown").classList.remove("ouvert");
+        document.getElementById("btn-compte").textContent = localStorage.getItem(USER_KEY) || "Compte";
+        document.getElementById("champs-auth").style.display = connecte ? "none" : "grid";
+        document.getElementById("mode-switch").style.display = connecte ? "none" : "flex";
+        document.getElementById("app-connectee").style.display = connecte ? "block" : "none";
+        const etat = document.getElementById("auth-etat");
+        etat.textContent = connecte
+            ? "Connecté en tant que " + (localStorage.getItem(USER_KEY) || "utilisateur") + ". Jeton valable 12 h."
+            : (modeInscription
+                ? "Choisissez un nom et un mot de passe, puis créez le compte."
+                : "Connectez-vous pour accéder à l'interface.");
+        document.getElementById("auth-titre").textContent = connecte
+            ? "Compte"
+            : (modeInscription ? "Créer un compte" : "Connexion");
+    }
+
+    let modeInscription = false;
+
+    function messageApi(data, status) {
+        if (data && typeof data.detail === "string") return data.detail;
+        if (status === 404) return "Service d'authentification introuvable. Reconstruisez l'image API.";
+        return "Échec de l'authentification.";
+    }
+
+    function basculerMode(inscription) {
+        modeInscription = inscription;
+        document.getElementById("mode-switch").classList.toggle("inscription", inscription);
+        document.getElementById("label-login").classList.toggle("actif", !inscription);
+        document.getElementById("label-register").classList.toggle("actif", inscription);
+        document.getElementById("btn-auth-submit").textContent = inscription ? "Créer le compte" : "Se connecter";
+        document.getElementById("auth-password").autocomplete = inscription ? "new-password" : "current-password";
+        majAuthUi();
+    }
+
+    async function authentifier() {
+        const username = document.getElementById("auth-username").value.trim();
+        const password = document.getElementById("auth-password").value;
+        const msg = document.getElementById("auth-message");
+        const chemin = modeInscription ? "/auth/register" : "/auth/login";
+        msg.style.color = "#7f8c8d";
+        msg.textContent = "En cours...";
+        try {
+            const response = await fetch(`${API_BASE}${chemin}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ username, password })
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                msg.style.color = "#c0392b";
+                msg.textContent = messageApi(data, response.status);
+                return;
+            }
+            if (modeInscription) {
+                document.getElementById("auth-password").value = "";
+                basculerMode(false);
+                msg.style.color = "#27ae60";
+                msg.textContent = "Compte créé. Vous pouvez vous connecter.";
+                return;
+            }
+            localStorage.setItem(TOKEN_KEY, data.access_token);
+            localStorage.setItem(USER_KEY, data.username);
+            if (data.id) localStorage.setItem("rh_user_id", String(data.id));
+            msg.style.color = "#27ae60";
+            msg.textContent = "Session ouverte pour " + data.username + " (12 h).";
+            majAuthUi();
+            chargerResultats();
+        } catch (error) {
+            msg.style.color = "#c0392b";
+            msg.textContent = "Impossible de joindre l'API.";
+        }
+    }
+
+    document.getElementById("btn-slider").addEventListener("click", () => basculerMode(!modeInscription));
+    document.getElementById("label-login").addEventListener("click", () => basculerMode(false));
+    document.getElementById("label-register").addEventListener("click", () => basculerMode(true));
+    document.getElementById("btn-auth-submit").addEventListener("click", authentifier);
+    document.getElementById("btn-compte").addEventListener("click", (event) => {
+        event.stopPropagation();
+        document.getElementById("compte-dropdown").classList.toggle("ouvert");
+    });
+    document.addEventListener("click", () => {
+        document.getElementById("compte-dropdown").classList.remove("ouvert");
+    });
+    document.getElementById("btn-ouvrir-mdp").addEventListener("click", (event) => {
+        event.stopPropagation();
+        const form = document.getElementById("form-mdp");
+        form.style.display = form.style.display === "none" ? "block" : "none";
+    });
+    document.getElementById("form-mdp").addEventListener("click", (event) => event.stopPropagation());
+    document.getElementById("form-mdp").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const msg = document.getElementById("auth-message");
+        const response = await fetch(`${API_BASE}/auth/mot-de-passe`, {
+            method: "POST",
+            headers: entetesAuth(),
+            body: JSON.stringify({
+                ancien_password: document.getElementById("ancien-mdp").value,
+                nouveau_password: document.getElementById("nouveau-mdp").value
+            })
+        });
+        const data = await response.json().catch(() => ({}));
+        msg.style.color = response.ok ? "#27ae60" : "#c0392b";
+        msg.textContent = data.message || data.detail || "Modification impossible.";
+        if (response.ok) {
+            document.getElementById("ancien-mdp").value = "";
+            document.getElementById("nouveau-mdp").value = "";
+            document.getElementById("form-mdp").style.display = "none";
+            document.getElementById("compte-dropdown").classList.remove("ouvert");
+        }
+    });
+    document.getElementById("btn-logout").addEventListener("click", () => {
+        localStorage.removeItem(TOKEN_KEY);
+        localStorage.removeItem(USER_KEY);
+        localStorage.removeItem("rh_user_id");
+        document.getElementById("auth-message").textContent = "Déconnecté.";
+        majAuthUi();
+        document.getElementById("liste-resultats").innerText = "Connectez-vous pour voir vos prédictions.";
+    });
+    document.getElementById("btn-supprimer-compte").addEventListener("click", async () => {
+        if (!confirm("Supprimer le compte et toutes ses prédictions ?")) return;
+        const response = await fetch(`${API_BASE}/auth/compte`, {
+            method: "DELETE",
+            headers: entetesAuth()
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            document.getElementById("auth-message").textContent = data.detail || "Suppression impossible.";
+            return;
+        }
+        localStorage.removeItem(TOKEN_KEY);
+        localStorage.removeItem(USER_KEY);
+        localStorage.removeItem("rh_user_id");
+        document.getElementById("auth-message").style.color = "#27ae60";
+        document.getElementById("auth-message").textContent = data.message || "Compte supprimé.";
+        majAuthUi();
+        document.getElementById("liste-resultats").innerText = "Compte supprimé.";
+    });
+    majAuthUi();
 
     const COLONNES_MODELE = [
         "age",
@@ -289,17 +485,49 @@ document.getElementById("select-quittes").addEventListener("change", function ()
         document.getElementById(id).addEventListener("input", recalculerFeaturesDerivees);
     });
 
+
+    function ajouterResultatLocal(r) {
+        const zone = document.getElementById("liste-resultats");
+        let table = zone.querySelector("table");
+        if (!table) {
+            zone.innerHTML = `
+                <table>
+                    <thead>
+                        <tr><th>ID</th><th>Employé</th><th>Prédiction</th><th>Risque</th></tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>`;
+            table = zone.querySelector("table");
+        }
+        const body = table.querySelector("tbody");
+        const ligne = document.createElement("tr");
+        ligne.innerHTML = `
+            <td>${r.id}</td>
+            <td>${r.prenom} ${r.nom}</td>
+            <td>${r.libelle_prediction}</td>
+            <td>${(r.probabilite_de_quitter * 100).toFixed(2)}%</td>`;
+        body.prepend(ligne);
+    }
+
     async function chargerResultats() {
         const zone = document.getElementById("liste-resultats");
         try {
-            const response = await fetch(`${API_BASE}/resultats?limit=10`);
-            const data = await response.json();
-            if (!response.ok) throw new Error(JSON.stringify(data.detail || data));
-            if (!data.resultats.length) {
-                zone.innerHTML = "<p class='hint'>Aucune prédiction enregistrée pour le moment.</p>";
+            if (!tokenCourant()) {
+                zone.innerText = "Connectez-vous pour voir vos prédictions.";
                 return;
             }
-            const lignes = data.resultats.map(r => `
+            const response = await fetch(`${API_BASE}/resultats?limit=10`, {
+                headers: entetesAuth(),
+                signal: AbortSignal.timeout(8000)
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(JSON.stringify(data.detail || data));
+            const lignesSource = data.resultats || [];
+            if (!lignesSource.length) {
+                zone.innerHTML = "<p class='hint'>Aucune prédiction enregistrée pour ce compte.</p>";
+                return;
+            }
+            const lignes = lignesSource.map(r => `
                 <tr>
                     <td>${r.id}</td>
                     <td>${r.prenom} ${r.nom}</td>
@@ -319,16 +547,21 @@ document.getElementById("select-quittes").addEventListener("change", function ()
                 </table>
             `;
         } catch (e) {
-            zone.innerHTML = "<p class='hint'>Impossible de lire la base : " + e.message + "</p>";
+            zone.innerHTML = "<p class='hint'>Impossible de lire les prédictions : " + e.message + "</p>";
         }
     }
 
     
-    window.addEventListener("DOMContentLoaded", () => {
+    function demarrer() {
         chargerColonnes();
         chargerResultats();
-        chargerListeQuittes(); 
-    });
+        chargerListeQuittes();
+    }
+    if (document.readyState === "loading") {
+        window.addEventListener("DOMContentLoaded", demarrer);
+    } else {
+        demarrer();
+    }
 
     let employeIdCourant = null;
 
@@ -397,6 +630,21 @@ document.getElementById("recherche-annuaire").addEventListener("input", function
 
     document.getElementById("prediction-form").addEventListener("submit", async function(e) {
         e.preventDefault();
+        const idSaisi = document.getElementById("recherche-annuaire").value.trim();
+        if (!idSaisi) {
+            alert("Renseignez un ID employé avant de lancer la prédiction.");
+            document.getElementById("recherche-annuaire").focus();
+            return;
+        }
+        employeIdCourant = Number(idSaisi);
+        if (!Number.isInteger(employeIdCourant)) {
+            alert("L'ID employé doit être un nombre.");
+            return;
+        }
+        if (!colonnesActuelles.length) {
+            alert("Les colonnes du modèle ne sont pas chargées. L'API ne répond pas.");
+            return;
+        }
         recalculerFeaturesDerivees();
 
         const modeleChoisi = "top1";
@@ -435,9 +683,13 @@ document.getElementById("recherche-annuaire").addEventListener("input", function
         };
 
         try {
+            if (!tokenCourant()) {
+                alert("Connectez-vous pour lancer une prédiction.");
+                return;
+            }
             const response = await fetch(`${API_BASE}/predict`, {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
+                headers: entetesAuth(),
                 body: JSON.stringify(payload)
             });
 
@@ -474,7 +726,14 @@ document.getElementById("recherche-annuaire").addEventListener("input", function
                 if (data.enregistrement && data.enregistrement.id) {
                     msgSpan.style.color = "#27ae60";
                     msgSpan.innerText = "✔ Enregistré automatiquement #" + data.enregistrement.id + " pour " + prenomSaisi + " " + nomSaisi;
-                    chargerResultats();
+                    ajouterResultatLocal({
+                        id: data.enregistrement.id,
+                        prenom: prenomSaisi,
+                        nom: nomSaisi,
+                        libelle_prediction: libelleTexteBrut,
+                        probabilite_de_quitter: data.probabilite,
+                        id_user: data.enregistrement.id_user
+                    });
     
                 } else {
                     msgSpan.innerText = "";
