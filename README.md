@@ -6,7 +6,7 @@ PostgreSQL. L'interface n'est accessible qu'avec un compte : le mot de
 passe est haché, la session dure 12 h, et chaque prédiction appartient à
 l'utilisateur connecté.
 
-La dernière version du logiciel est hebergé sur un serveru Hetzner à l'adresse suivante : 
+La dernière version du logiciel est hebergé sur un serveur Hetzner à l'adresse suivante : 
 
 https://predictions.1dream.art
 
