@@ -40,7 +40,7 @@ DB_PASSWORD=mysecretpassword
 DB_NAME=rh_predictions_db
 AUTH_SECRET=change-me
 ```
-Pour démmarer l'application contenierisées la commande suivnate s'effectue depuis la racine du projet :  
+Pour démmarer l'application contenierisées la commande suivante s'effectue depuis la racine du projet :  
 
 ```bash
 docker compose up --build
@@ -49,7 +49,7 @@ Frontend : http://localhost:8080
 API / Swagger : http://localhost:8000/docs
 
 
----
+
 Comptes et prédictions
 L'interface reste masquée tant que l'utilisateur n'est pas connecté.
 `POST /auth/register` crée le compte et renvoie un jeton de 12 h.
@@ -71,7 +71,7 @@ Les routes existent sous `/auth/...` et `/api/auth/...`. Le navigateur
 appelle `/api/...` sur le port 8080. Nginx retire ce préfixe en transmettant
 à FastAPI, qui reçoit `/auth/...`. La copie `/api` sert un appel direct sur
 le port 8000. Les deux exécutent la même fonction.
----
+
 Base de données
 `users` et `resultats` sont créées au démarrage de l'API par
 `database.py` (`Base.metadata.create_all`), à partir des modèles
@@ -88,7 +88,7 @@ Volumes :
 exécution.
 `./backend/modeles:/app/modeles` permet de changer le `.pkl` sans
 reconstruire l'image API.
----
+
 Golden path (backend)
 Chemin recommandé : une branche, un pipeline, des interrupteurs.
 Pipeline : `.github/workflows/ci-cd.yml`
@@ -121,7 +121,7 @@ Secrets GitHub : `SSH_PRIVATE_KEY`, `PROD_HOST`, `ANSIBLE_VAULT_PASSWORD`.
 ```
 feature/* → Stagging (tests + version) → Main (build via artefact) → Review → Prod
 ```
----
+
 Rôle de chaque développeur
 Développeur backend
 Responsable de tout ce qui tourne derrière `/api` :
