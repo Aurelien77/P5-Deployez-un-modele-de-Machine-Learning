@@ -1,3 +1,15 @@
+# [1.0.0-rc.3](https://github.com/Aurelien77/P5-Deployez-un-modele-de-Machine-Learning/compare/v1.0.0-rc.2...v1.0.0-rc.3) (2026-10-05)
+
+
+### Bug Fixes
+
+* **tests:** aligner test_couverture sur l'authentification ([b82dc41](https://github.com/Aurelien77/P5-Deployez-un-modele-de-Machine-Learning/commit/b82dc41f5ffcd18d2086fc0cfc6c5fd186577de7))
+
+
+### Features
+
+* **auth:** lier les prédictions à un compte utilisateur ([c2a2d8b](https://github.com/Aurelien77/P5-Deployez-un-modele-de-Machine-Learning/commit/c2a2d8bc24495314448c6324ecd4563dc30e817e))
+
 # [1.0.0-rc.2](https://github.com/Aurelien77/P5-Deployez-un-modele-de-Machine-Learning/compare/v1.0.0-rc.1...v1.0.0-rc.2) (2026-10-01)
 
 
