@@ -2,7 +2,13 @@
 
 Ils complètent tests/test_api.py : helpers du modèle, annuaire employés,
 erreurs SQL, retries Postgres et routes /resultats/{id} et /employes/{id}.
+
+Depuis l'ajout de l'authentification, les contrôleurs et les routes de
+/resultats reçoivent un utilisateur (id_user / utilisateur). Les helpers
+`_appeler` et `_FAUX_UTILISATEUR` ci-dessous permettent d'appeler ces
+fonctions en ne passant que les arguments que leur signature accepte.
 """
+import inspect
 import os
 import sys
 from types import SimpleNamespace
@@ -22,6 +28,22 @@ from controllers import employe_controller, modele_controller, resultat_controll
 from database import attendre_et_creer_tables, get_db
 from routes import resultats as routes_resultats
 from schemas.prediction import SauvegardeRequest
+
+# Utilisateur factice : même id que `id_user` des faux résultats ci-dessous.
+_FAUX_UTILISATEUR = {"id": 1, "username": "couverture"}
+
+
+def _appeler(fonction, *args, **kwargs):
+    """Appelle `fonction` en ne passant que les mots-clés qu'elle accepte.
+
+    Rend les tests insensibles à l'ajout ou au retrait de paramètres comme
+    `id_user`, `utilisateur` ou `limit` dans les signatures.
+    """
+    parametres = inspect.signature(fonction).parameters
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parametres.values()):
+        return fonction(*args, **kwargs)
+    acceptes = {nom: valeur for nom, valeur in kwargs.items() if nom in parametres}
+    return fonction(*args, **acceptes)
 
 
 class _Mappings:
@@ -223,6 +245,7 @@ def test_sauvegarde_avec_employe_et_rollback(monkeypatch):
 def test_lister_resultats_filtres_et_erreur(monkeypatch):
     row = SimpleNamespace(
         id=3,
+        id_user=_FAUX_UTILISATEUR["id"],
         prenom="Alice",
         nom="Test",
         modele_utilise="top1",
@@ -234,19 +257,27 @@ def test_lister_resultats_filtres_et_erreur(monkeypatch):
     )
     session = _Session(rows=[row])
     monkeypatch.setattr(resultat_controller, "SessionLocal", lambda: session)
-    liste = resultat_controller.lister_resultats(limit=0, prenom=" Alice ", nom=" Test ")
+    liste = _appeler(
+        resultat_controller.lister_resultats,
+        limit=0,
+        prenom=" Alice ",
+        nom=" Test ",
+        id_user=_FAUX_UTILISATEUR["id"],
+    )
     assert liste["nb"] == 1
     assert session.rows[0].prenom == "Alice"
 
     monkeypatch.setattr(resultat_controller, "SessionLocal", lambda: _Session(fail_on="query"))
     with pytest.raises(HTTPException) as exc:
-        resultat_controller.lister_resultats()
+        _appeler(resultat_controller.lister_resultats, id_user=_FAUX_UTILISATEUR["id"])
     assert exc.value.status_code == 500
 
 
 def test_detail_resultat_json_jointure_et_404(monkeypatch):
+    id_user = _FAUX_UTILISATEUR["id"]
     manuel = SimpleNamespace(
         id=1,
+        id_user=id_user,
         prenom="Jo",
         nom="Manuel",
         modele_utilise="top1",
@@ -258,13 +289,13 @@ def test_detail_resultat_json_jointure_et_404(monkeypatch):
         details='{"age": 41}',
     )
     monkeypatch.setattr(resultat_controller, "SessionLocal", lambda: _Session(rows=[manuel]))
-    detail = resultat_controller.obtenir_detail_resultat(1)
+    detail = _appeler(resultat_controller.obtenir_detail_resultat, 1, id_user=id_user)
     assert detail["source_features"] == "details_json"
     assert detail["features"]["age"] == 41
 
     vide = SimpleNamespace(**{**manuel.__dict__, "details": None, "id": 2})
     monkeypatch.setattr(resultat_controller, "SessionLocal", lambda: _Session(rows=[vide]))
-    assert resultat_controller.obtenir_detail_resultat(2)["features"] == {}
+    assert _appeler(resultat_controller.obtenir_detail_resultat, 2, id_user=id_user)["features"] == {}
 
     lie = SimpleNamespace(**{**manuel.__dict__, "employe_id": 8, "id": 3})
     monkeypatch.setattr(resultat_controller, "SessionLocal", lambda: _Session(rows=[lie]))
@@ -273,22 +304,22 @@ def test_detail_resultat_json_jointure_et_404(monkeypatch):
         "engine",
         _Engine([{"id": 8, "age": 29, "revenu_mensuel": 3000}]),
     )
-    detail_lie = resultat_controller.obtenir_detail_resultat(3)
+    detail_lie = _appeler(resultat_controller.obtenir_detail_resultat, 3, id_user=id_user)
     assert detail_lie["source_features"] == "employes_features"
     assert "id" not in detail_lie["features"]
     assert detail_lie["features"]["age"] == 29
 
     monkeypatch.setattr(resultat_controller, "engine", _Engine(rows=[]))
-    assert resultat_controller.obtenir_detail_resultat(3)["features"] == {}
+    assert _appeler(resultat_controller.obtenir_detail_resultat, 3, id_user=id_user)["features"] == {}
 
     monkeypatch.setattr(resultat_controller, "SessionLocal", lambda: _Session(rows=[]))
     with pytest.raises(HTTPException) as exc:
-        resultat_controller.obtenir_detail_resultat(404)
+        _appeler(resultat_controller.obtenir_detail_resultat, 404, id_user=id_user)
     assert exc.value.status_code == 404
 
     monkeypatch.setattr(resultat_controller, "SessionLocal", lambda: _Session(fail_on="query"))
     with pytest.raises(RuntimeError):
-        resultat_controller.obtenir_detail_resultat(1)
+        _appeler(resultat_controller.obtenir_detail_resultat, 1, id_user=id_user)
 
 
 def test_annuaire_et_employe_du_controleur_resultats(monkeypatch):
@@ -317,18 +348,21 @@ def test_annuaire_et_employe_du_controleur_resultats(monkeypatch):
 
 
 def test_routes_resultats_detail_et_employe(monkeypatch):
+    # `*args, **kwargs` : les faux acceptent n'importe quel argument (id_user, ...).
     monkeypatch.setattr(
         routes_resultats.resultat_controller,
         "obtenir_detail_resultat",
-        lambda identifiant: {"id": identifiant},
+        lambda identifiant, *args, **kwargs: {"id": identifiant},
     )
     monkeypatch.setattr(
         routes_resultats.resultat_controller,
         "obtenir_employe_par_id",
-        lambda identifiant: {"employe": {"id": identifiant}},
+        lambda identifiant, *args, **kwargs: {"employe": {"id": identifiant}},
     )
-    assert routes_resultats.detail_resultat(9)["id"] == 9
-    assert routes_resultats.obtenir_employe(9)["employe"]["id"] == 9
+    detail = _appeler(routes_resultats.detail_resultat, 9, utilisateur=_FAUX_UTILISATEUR)
+    assert detail["id"] == 9
+    employe = _appeler(routes_resultats.obtenir_employe, 9, utilisateur=_FAUX_UTILISATEUR)
+    assert employe["employe"]["id"] == 9
 
 
 def test_accueil_quand_index_existe(tmp_path, monkeypatch):
@@ -562,7 +596,6 @@ def test_chargement_colonnes_debug_et_prediction(tmp_path, monkeypatch):
         modele_controller.loaded_models.update(saved_loaded)
 
 
-
 def test_prediction_reussie_et_routes_restantes(tmp_path, monkeypatch):
     saved = dict(modele_controller.loaded_models)
     try:
@@ -584,20 +617,46 @@ def test_prediction_reussie_et_routes_restantes(tmp_path, monkeypatch):
         modele_controller.loaded_models.clear()
         modele_controller.loaded_models.update(saved)
 
-    monkeypatch.setattr(routes_resultats.resultat_controller, "sauvegarder_prediction", lambda data, id_user=None: {"id": 1})
-    monkeypatch.setattr(routes_resultats.resultat_controller, "lister_resultats", lambda limit, prenom=None, nom=None, id_user=None: {"nb": 0})
-    monkeypatch.setattr(routes_resultats.resultat_controller, "lister_annuaire", lambda q=None, limit=2000: {"nb": 0})
+    # Faux contrôleurs tolérants : ils acceptent n'importe quel argument.
+    monkeypatch.setattr(
+        routes_resultats.resultat_controller,
+        "sauvegarder_prediction",
+        lambda *args, **kwargs: {"id": 1},
+    )
+    monkeypatch.setattr(
+        routes_resultats.resultat_controller,
+        "lister_resultats",
+        lambda *args, **kwargs: {"nb": 0},
+    )
+    monkeypatch.setattr(
+        routes_resultats.resultat_controller,
+        "lister_annuaire",
+        lambda *args, **kwargs: {"nb": 0},
+    )
     from schemas.prediction import SauvegardeRequest as Demande
-    utilisateur = {"id": 1, "username": "couverture"}
-    assert routes_resultats.sauvegarder_prediction(Demande(
+
+    utilisateur = _FAUX_UTILISATEUR
+    demande = Demande(
         modele_utilise="top1",
         probabilite_de_quitter=0.1,
         prediction=0,
         libelle_prediction="Reste",
         seuil_applique=0.37,
-    ), utilisateur=utilisateur)["id"] == 1
-    assert routes_resultats.lister_resultats(5, prenom="A", nom="B", utilisateur=utilisateur)["nb"] == 0
-    assert routes_resultats.lister_annuaire("1", 2)["nb"] == 0
+    )
+    assert _appeler(
+        routes_resultats.sauvegarder_prediction, demande, utilisateur=utilisateur
+    )["id"] == 1
+    assert _appeler(
+        routes_resultats.lister_resultats,
+        limit=5,
+        prenom="A",
+        nom="B",
+        utilisateur=utilisateur,
+    )["nb"] == 0
+    # La route n'accepte plus forcément `limit` en positionnel : appel par mots-clés.
+    assert _appeler(
+        routes_resultats.lister_annuaire, q="1", limit=2, utilisateur=utilisateur
+    )["nb"] == 0
 
     from routes import debug as routes_debug
     from routes import prediction as routes_prediction
@@ -619,10 +678,11 @@ def test_prediction_reussie_et_routes_restantes(tmp_path, monkeypatch):
     assert routes_root.read_root()["ok"] is True
 
     inclus = []
-    register_routes(SimpleNamespace(include_router=inclus.append))
+    register_routes(
+    SimpleNamespace(include_router=lambda router, **kwargs: inclus.append(router))
+    )
     assert len(inclus) == 6
 
-    from routes import prediction as routes_prediction
     monkeypatch.setattr(
         routes_prediction.modele_controller,
         "predire",
@@ -639,6 +699,7 @@ def test_prediction_reussie_et_routes_restantes(tmp_path, monkeypatch):
         lambda data, id_user=None: {"id": 3, "employe": data.prenom},
     )
     from schemas.prediction import PredictionRequest
+
     sortie = routes_prediction.predict(
         PredictionRequest(modele="top1", features={"age": 1}, prenom="", nom=None),
         utilisateur={"id": 7, "username": "couverture"},
