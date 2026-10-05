@@ -14,7 +14,7 @@ ITERATIONS = 200_000
 DUREE_TOKEN_SECONDES = 12 * 60 * 60
 AUTH_SECRET = os.getenv("AUTH_SECRET", "dev-secret-change-me")
 
-#Parrie hachage er vérification de mot de passe. 
+#Partie hachage et vérification de mot de passe. 
 # Le mot de passe est haché avec PBKDF2-HMAC-SHA256, 200 000 itérations et un sel aléatoire de 16 octets.
 #Le mots de passe est récupéré dans le .env a la racine et n'est pas commité.
 

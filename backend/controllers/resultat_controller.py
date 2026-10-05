@@ -123,18 +123,18 @@ def lister_annuaire(q: Optional[str] = None, limit: int = 2000) -> dict:
     return lister_annuaire_par_id(q=q, limit=limit)
 
 
-def lister_annuaire_par_id(q: Optional[str] = None ) -> dict:
-   
+def lister_annuaire_par_id(q: Optional[str] = None, limit: int = 40) -> dict:
+    limite = max(1, min(int(limit or 2000), 5000))
     sql = """
         SELECT f.id, c.a_quitte_l_entreprise
         FROM employes_features f
         LEFT JOIN employes_cible c ON c.id = f.id
     """
-    params = {}
+    params = {"limite": limite}
     if q and str(q).strip():
         sql += " WHERE CAST(f.id AS TEXT) LIKE :q "
         params["q"] = f"{str(q).strip()}%"
-    sql += " ORDER BY f.id ASC"
+    sql += " ORDER BY f.id ASC LIMIT :limite"
     try:
         with engine.connect() as conn:
             lignes = conn.execute(text(sql), params).mappings().all()

@@ -153,7 +153,7 @@ def test_detail_resultat_et_filtre_nom():
 
 def test_annuaire_et_employe():
     """Couvre /annuaire et /employes/{id}, tables presentes ou non."""
-    annuaire = client.get("/annuaire", params={"q": "1"})
+    annuaire = client.get("/annuaire", params={"q": "1", "limit": 5})
     assert annuaire.status_code in (200, 500)
     if annuaire.status_code == 200:
         assert "personnes" in annuaire.json()
@@ -188,7 +188,7 @@ def test_auth_compte():
     doublon = client.post("/auth/register", json={"username": username, "password": password})
     assert doublon.status_code == 409
 
-    mauvais = client.post("/auth/login", json={"username": username, "password": "paslebon"})
+    mauvais = client.post("/auth/login", json={"username": username, "password": "mauvais_mdp"})
     assert mauvais.status_code == 401
 
     moi = client.get("/auth/moi", headers=headers)
