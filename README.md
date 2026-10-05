@@ -40,11 +40,13 @@ DB_PASSWORD=mysecretpassword
 DB_NAME=rh_predictions_db
 AUTH_SECRET=change-me
 ```
-Pour démmarer l'application contenierisées la commande suivante s'effectue depuis la racine du projet :  
+Pour démarrer l'application conteneurisée, la commande suivante s'exécute depuis la racine du projet : 
 
 ```bash
 docker compose up --build
 ```
+
+
 Frontend : http://localhost:8080
 API / Swagger : http://localhost:8000/docs
 
