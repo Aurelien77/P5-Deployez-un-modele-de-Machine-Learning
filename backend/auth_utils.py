@@ -14,6 +14,10 @@ ITERATIONS = 200_000
 DUREE_TOKEN_SECONDES = 12 * 60 * 60
 AUTH_SECRET = os.getenv("AUTH_SECRET", "dev-secret-change-me")
 
+#Parrie hachage er vérification de mot de passe. 
+# Le mot de passe est haché avec PBKDF2-HMAC-SHA256, 200 000 itérations et un sel aléatoire de 16 octets.
+#Le mots de passe est récupéré dans le .env a la racine et n'est pas commité.
+
 
 def hacher_mot_de_passe(mot_de_passe: str) -> str:
     sel = secrets.token_bytes(16)
@@ -44,6 +48,9 @@ def _b64_decode(value: str) -> bytes:
     padding = "=" * (-len(value) % 4)
     return base64.urlsafe_b64decode(value + padding)
 
+# Partie création et lecteur du token d'authentification.
+# Le token est signé HMAC-SHA256 avec un secret côté serveur, et contient l'id et le nom d'utilisateur, ainsi qu'une date d'expiration. 
+# Il est encodé en base64 pour être transporté dans l'en-tête Authorization.
 
 def creer_token(user_id: int, username: str) -> dict:
     expiration = int(time.time()) + DUREE_TOKEN_SECONDES

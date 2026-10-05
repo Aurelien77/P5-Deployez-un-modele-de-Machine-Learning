@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field
 
+#Validation des données utilisateur via pydantic.
 
 class CompteRequest(BaseModel):
     """Identifiants pour créer un compte ou se connecter."""

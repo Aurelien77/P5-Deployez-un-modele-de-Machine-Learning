@@ -2,6 +2,9 @@ from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, Field
 
+#Validation des données de prédiction et de sauvegarde via pydantic. 
+# Ces classes sont utilisées dans les routes FastAPI pour valider les requêtes entrantes et générer la documentation OpenAPI.
+
 
 class PredictionRequest(BaseModel):
     """Demande de prédiction. Le résultat est calculé puis enregistré."""

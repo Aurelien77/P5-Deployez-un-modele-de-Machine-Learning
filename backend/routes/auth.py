@@ -4,9 +4,15 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from controllers import auth_controller
 from schemas.user import CompteRequest, MotDePasseRequest
 
+#Ajoute le préfixe auth/ devant les routes pour organiser nominativement les routes.
+
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+#recupère le token dans l'entête http
+
 _bearer = HTTPBearer(auto_error=False)
 
+# Est-ce que un token de connexion existe sinon répond 401, non authtentifié. 
 
 def utilisateur_courant(
     credentials: HTTPAuthorizationCredentials = Depends(_bearer),
@@ -15,6 +21,7 @@ def utilisateur_courant(
         raise HTTPException(status_code=401, detail="Connexion requise (jeton Bearer).")
     return auth_controller.utilisateur_depuis_token(credentials.credentials)
 
+#Debut des routes
 
 @router.get("/sante", summary="Vérifier que les routes auth sont chargées")
 def sante():

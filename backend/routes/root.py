@@ -4,7 +4,7 @@ from controllers import root_controller
 
 router = APIRouter(tags=["accueil"])
 
-
+#route principal vers accueil.
 @router.get(
     "/",
     summary="Accueil",

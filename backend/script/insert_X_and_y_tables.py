@@ -6,10 +6,13 @@ from sqlalchemy.exc import OperationalError
 
 # --- CONFIGURATION DE LA BASE DE DONNÉES POSTGRESQL ---
 DB_USER = os.getenv("DB_USER", "postgres")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "mysecretpassword")
+DB_PASSWORD = os.getenv("DB_PASSWORD")
 DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_PORT = os.getenv("DB_PORT", "5432")
 DB_NAME = os.getenv("DB_NAME", "rh_predictions_db")
+
+if not DB_PASSWORD:
+    raise RuntimeError("DB_PASSWORD manquant : Db_PASSWORD A DEFINIR DANS UN.ENV A LA RACINE DU PROJET")
 
 DATABASE_URL = f"postgresql+psycopg://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 

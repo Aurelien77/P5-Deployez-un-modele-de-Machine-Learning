@@ -31,7 +31,7 @@ def sauvegarder_prediction(
     description="Historique des prédictions de l'utilisateur connecté, du plus récent au plus ancien.",
 )
 def lister_resultats(
-    limit: int = Query(20, description="Nombre maximum de lignes renvoyées."),
+    limit: Optional[int] = Query(None, description="Nombre maximum de lignes. Absent = toutes."),
     prenom: Optional[str] = Query(None, description="Filtre exact sur le prénom."),
     nom: Optional[str] = Query(None, description="Filtre exact sur le nom."),
     utilisateur: dict = Depends(utilisateur_courant),
@@ -66,10 +66,8 @@ def detail_resultat(
 )
 def lister_annuaire(
     q: Optional[str] = Query(None, description="Début de l'identifiant employé à rechercher."),
-    limit: int = Query(2000, description="Nombre maximum d'employés renvoyés."),
 ):
-    """Recherche des employés par début d'identifiant."""
-    return resultat_controller.lister_annuaire(q=q, limit=limit)
+    return resultat_controller.lister_annuaire(q=q, limit=None)
 
 
 @router.get(
