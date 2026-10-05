@@ -145,7 +145,7 @@ Responsable de l'interface :
 `GET /colonnes`, `POST /predict`, `GET /resultats`, `GET /annuaire` et
 `GET /employes/{id}`. Il ne touche ni au modèle ML ni au Vault.
 Documentation : frontend/README.md
----
+
 Architecture rapide
 ```
 Navigateur
