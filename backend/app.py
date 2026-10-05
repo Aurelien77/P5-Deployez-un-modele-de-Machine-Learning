@@ -19,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from controllers.modele_controller import COLONNES_MODELE, charger_modeles
 from database import initialiser_base
 from models.resultat import ResultatDB  # noqa: F401 — enregistre le modèle sur Base
+from models.user import UserDB  # noqa: F401 — enregistre la table users
 from routes import register_routes
 
 initialiser_base()
