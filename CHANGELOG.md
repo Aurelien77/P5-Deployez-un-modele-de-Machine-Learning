@@ -1,3 +1,10 @@
+# [1.0.0-rc.4](https://github.com/Aurelien77/P5-Deployez-un-modele-de-Machine-Learning/compare/v1.0.0-rc.3...v1.0.0-rc.4) (2026-10-06)
+
+
+### Bug Fixes
+
+* **resultats:** supprimer le paramètre limit de l'historique et de l'annuaire ([dd027ff](https://github.com/Aurelien77/P5-Deployez-un-modele-de-Machine-Learning/commit/dd027ff550408cb474d593c467c6892f8360d95c))
+
 # [1.0.0-rc.3](https://github.com/Aurelien77/P5-Deployez-un-modele-de-Machine-Learning/compare/v1.0.0-rc.2...v1.0.0-rc.3) (2026-10-05)
 
 
