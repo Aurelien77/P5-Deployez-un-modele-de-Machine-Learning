@@ -110,7 +110,7 @@ def test_sauvegarder_et_lister_resultats():
     assert data_save["id_user"]
     
     # Relecture de l'historique
-    res_list = client.get("/resultats?limit=5", headers=headers)
+    res_list = client.get("/resultats", headers=headers)
     assert res_list.status_code == 200
     data_list = res_list.json()
     assert data_list["nb"] > 0
@@ -143,7 +143,7 @@ def test_detail_resultat_et_filtre_nom():
     assert detail.json()["prenom"] == "Bruno"
     assert detail.json()["source_features"] == "details_json"
 
-    filtre = client.get("/resultats", params={"prenom": "Bruno", "nom": "Couverture", "limit": 5}, headers=headers)
+    filtre = client.get("/resultats", params={"prenom": "Bruno", "nom": "Couverture"}, headers=headers)
     assert filtre.status_code == 200
     assert any(item["id"] == identifiant for item in filtre.json()["resultats"])
 
@@ -153,7 +153,7 @@ def test_detail_resultat_et_filtre_nom():
 
 def test_annuaire_et_employe():
     """Couvre /annuaire et /employes/{id}, tables presentes ou non."""
-    annuaire = client.get("/annuaire", params={"q": "1", "limit": 5})
+    annuaire = client.get("/annuaire", params={"q": "1"})
     assert annuaire.status_code in (200, 500)
     if annuaire.status_code == 200:
         assert "personnes" in annuaire.json()
