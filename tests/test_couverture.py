@@ -37,7 +37,7 @@ def _appeler(fonction, *args, **kwargs):
     """Appelle `fonction` en ne passant que les mots-clés qu'elle accepte.
 
     Rend les tests insensibles à l'ajout ou au retrait de paramètres comme
-    `id_user`, `utilisateur` ou `limit` dans les signatures.
+    `id_user` ou `utilisateur` dans les signatures.
     """
     parametres = inspect.signature(fonction).parameters
     if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parametres.values()):
@@ -186,11 +186,11 @@ def test_employe_annuaire_et_fiche(monkeypatch):
     engine = _Engine([{"id": 12, "a_quitte_l_entreprise": 1}])
     monkeypatch.setattr(employe_controller, "engine", engine)
 
-    liste = employe_controller.lister_annuaire(q="1", limit=500)
+    liste = employe_controller.lister_annuaire(q="1")
     assert liste["nb"] == 1
     assert liste["personnes"][0]["libelle"] == "Employé #12"
 
-    sans_filtre = employe_controller.lister_annuaire(q="   ", limit=0)
+    sans_filtre = employe_controller.lister_annuaire(q="   ")
     assert sans_filtre["nb"] == 1
 
     fiche = employe_controller.obtenir_employe(12)
@@ -259,7 +259,6 @@ def test_lister_resultats_filtres_et_erreur(monkeypatch):
     monkeypatch.setattr(resultat_controller, "SessionLocal", lambda: session)
     liste = _appeler(
         resultat_controller.lister_resultats,
-        limit=0,
         prenom=" Alice ",
         nom=" Test ",
         id_user=_FAUX_UTILISATEUR["id"],
@@ -328,9 +327,9 @@ def test_annuaire_et_employe_du_controleur_resultats(monkeypatch):
         "engine",
         _Engine([{"id": 5, "a_quitte_l_entreprise": 0}]),
     )
-    annuaire = resultat_controller.lister_annuaire(q="5", limit=None)
+    annuaire = resultat_controller.lister_annuaire(q="5")
     assert annuaire["personnes"][0]["id"] == 5
-    assert resultat_controller.lister_annuaire_par_id(q="  ", limit=1)["nb"] == 1
+    assert resultat_controller.lister_annuaire_par_id(q="  ")["nb"] == 1
 
     fiche = resultat_controller.obtenir_employe_par_id(5)
     assert fiche["employe"]["id"] == 5
@@ -648,14 +647,13 @@ def test_prediction_reussie_et_routes_restantes(tmp_path, monkeypatch):
     )["id"] == 1
     assert _appeler(
         routes_resultats.lister_resultats,
-        limit=5,
         prenom="A",
         nom="B",
         utilisateur=utilisateur,
     )["nb"] == 0
     # La route n'accepte plus forcément `limit` en positionnel : appel par mots-clés.
     assert _appeler(
-        routes_resultats.lister_annuaire, q="1", limit=2, utilisateur=utilisateur
+        routes_resultats.lister_annuaire, q="1", utilisateur=utilisateur
     )["nb"] == 0
 
     from routes import debug as routes_debug
